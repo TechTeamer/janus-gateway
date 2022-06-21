@@ -319,11 +319,23 @@ gboolean janus_json_is_valid(json_t *val, json_type jtype, unsigned int flags);
  * @returns TRUE if it's a keyframe, FALSE otherwise */
 gboolean janus_vp8_is_keyframe(const char *buffer, int len);
 
+/*! \brief Helper method to get resolution info from a VP8 keyframe
+ * @param[in] buffer The RTP payload to process
+ * @param[in] len The length of the RTP payload
+ * @returns json_t instance containing width and height if the input was a valid keyframe */
+json_t *janus_vp8_get_keyframe_resolution(const char *buffer, int len);
+
 /*! \brief Helper method to check if a VP9 frame is a keyframe or not
  * @param[in] buffer The RTP payload to process
  * @param[in] len The length of the RTP payload
  * @returns TRUE if it's a keyframe, FALSE otherwise */
 gboolean janus_vp9_is_keyframe(const char *buffer, int len);
+
+/*! \brief Helper method to get resolution info from a VP9 keyframe
+ * @param[in] buffer The RTP payload to process
+ * @param[in] len The length of the RTP payload
+ * @returns json_t instance containing width and height if the input was a valid keyframe */
+json_t *janus_vp9_get_keyframe_resolution(const char *buffer, int len);
 
 /*! \brief Helper method to check if an H.264 frame is a keyframe or not
  * @param[in] buffer The RTP payload to process
