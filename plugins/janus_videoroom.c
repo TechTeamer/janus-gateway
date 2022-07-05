@@ -5781,10 +5781,7 @@ void janus_videoroom_incoming_rtp(janus_plugin_session *handle, janus_plugin_rtp
 						json_object_set_new(event, "id", string_ids ? json_string(participant->user_id_str) : json_integer(participant->user_id));
 						json_object_set_new(event, "resolution", janus_vp8_get_keyframe_resolution(payload, plen));
 
-						janus_videoroom_notify_participants(participant, event, TRUE);
-						if(notify_events && gateway->events_is_enabled()) {
-							gateway->notify_event(&janus_videoroom_plugin, session->handle, event);
-						}
+						gateway->push_event(session->handle, &janus_videoroom_plugin, NULL, event, NULL);
 
 						json_decref(event);
 						janus_mutex_unlock(&videoroom->mutex);
@@ -5799,11 +5796,8 @@ void janus_videoroom_incoming_rtp(janus_plugin_session *handle, janus_plugin_rtp
 						json_object_set_new(event, "room", string_ids ? json_string(videoroom->room_id_str) : json_integer(videoroom->room_id));
 						json_object_set_new(event, "id", string_ids ? json_string(participant->user_id_str) : json_integer(participant->user_id));
 						json_object_set_new(event, "resolution", janus_vp9_get_keyframe_resolution(payload, plen));
-
-						janus_videoroom_notify_participants(participant, event, TRUE);
-						if(notify_events && gateway->events_is_enabled()) {
-							gateway->notify_event(&janus_videoroom_plugin, session->handle, event);
-						}
+						
+						gateway->push_event(session->handle, &janus_videoroom_plugin, NULL, event, NULL);
 
 						json_decref(event);
 						janus_mutex_unlock(&videoroom->mutex);
