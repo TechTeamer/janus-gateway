@@ -759,6 +759,88 @@ gboolean janus_vp8_is_keyframe(const char *buffer, int len) {
 	return FALSE;
 }
 
+json_t *janus_vp8_get_keyframe_resolution(const char *buffer, int len) {
+	json_t *resolution = json_object();
+	if(!buffer || len < 16)
+		return resolution;
+
+	/* Parse VP8 header now */
+	uint8_t vp8pd = *buffer;
+	uint8_t xbit = (vp8pd & 0x80);
+	uint8_t sbit = (vp8pd & 0x10);
+	if(xbit) {
+		JANUS_LOG(LOG_HUGE, "  -- X bit is set!\n");
+		/* Read the Extended control bits octet */
+		buffer++;
+		vp8pd = *buffer;
+		uint8_t ibit = (vp8pd & 0x80);
+		uint8_t lbit = (vp8pd & 0x40);
+		uint8_t tbit = (vp8pd & 0x20);
+		uint8_t kbit = (vp8pd & 0x10);
+		if(ibit) {
+			JANUS_LOG(LOG_HUGE, "  -- I bit is set!\n");
+			/* Read the PictureID octet */
+			buffer++;
+			vp8pd = *buffer;
+			uint16_t picid = vp8pd, wholepicid = picid;
+			uint8_t mbit = (vp8pd & 0x80);
+			if(mbit) {
+				JANUS_LOG(LOG_HUGE, "  -- M bit is set!\n");
+				memcpy(&picid, buffer, sizeof(uint16_t));
+				wholepicid = ntohs(picid);
+				picid = (wholepicid & 0x7FFF);
+				buffer++;
+			}
+			JANUS_LOG(LOG_HUGE, "  -- -- PictureID: %"SCNu16"\n", picid);
+		}
+		if(lbit) {
+			JANUS_LOG(LOG_HUGE, "  -- L bit is set!\n");
+			/* Read the TL0PICIDX octet */
+			buffer++;
+			vp8pd = *buffer;
+		}
+		if(tbit || kbit) {
+			JANUS_LOG(LOG_HUGE, "  -- T/K bit is set!\n");
+			/* Read the TID/KEYIDX octet */
+			buffer++;
+			vp8pd = *buffer;
+		}
+	}
+	buffer++;	/* Now we're in the payload */
+	if(sbit) {
+		JANUS_LOG(LOG_HUGE, "  -- S bit is set!\n");
+		unsigned long int vp8ph = 0;
+		memcpy(&vp8ph, buffer, 4);
+		vp8ph = ntohl(vp8ph);
+		uint8_t pbit = ((vp8ph & 0x01000000) >> 24);
+		if(!pbit) {
+			JANUS_LOG(LOG_HUGE, "  -- P bit is NOT set!\n");
+			/* It is a key frame! Get resolution for debugging */
+			unsigned char *c = (unsigned char *)buffer+3;
+			/* vet via sync code */
+			if(c[0]!=0x9d||c[1]!=0x01||c[2]!=0x2a) {
+				JANUS_LOG(LOG_HUGE, "First 3-bytes after header not what they're supposed to be?\n");
+			} else {
+				unsigned short val3, val5;
+				memcpy(&val3,c+3,sizeof(short));
+				int vp8w = swap2(val3)&0x3fff;
+				int vp8ws = swap2(val3)>>14;
+				memcpy(&val5,c+5,sizeof(short));
+				int vp8h = swap2(val5)&0x3fff;
+				int vp8hs = swap2(val5)>>14;
+
+				json_object_set_new(resolution, "width", json_integer(vp8w));
+				json_object_set_new(resolution, "height", json_integer(vp8h));
+
+				JANUS_LOG(LOG_HUGE, "VP8 key frame resolution: %dx%d (scale=%dx%d)\n", vp8w, vp8h, vp8ws, vp8hs);
+				return resolution;
+			}
+		}
+	}
+
+	return resolution;
+}
+
 gboolean janus_vp9_is_keyframe(const char *buffer, int len) {
 	if(!buffer || len < 16)
 		return FALSE;
@@ -841,6 +923,94 @@ gboolean janus_vp9_is_keyframe(const char *buffer, int len) {
 	}
 	/* If we got here it's not a key frame */
 	return FALSE;
+}
+
+json_t *janus_vp9_get_keyframe_resolution(const char *buffer, int len) {
+	json_t *resolution = json_object();
+	if(!buffer || len < 16)
+		return resolution;
+	/* Parse VP9 header now */
+	uint8_t vp9pd = *buffer;
+	uint8_t ibit = (vp9pd & 0x80);
+	uint8_t pbit = (vp9pd & 0x40);
+	uint8_t lbit = (vp9pd & 0x20);
+	uint8_t fbit = (vp9pd & 0x10);
+	uint8_t vbit = (vp9pd & 0x02);
+	buffer++;
+	len--;
+	if(ibit) {
+		/* Read the PictureID octet */
+		vp9pd = *buffer;
+		uint16_t picid = vp9pd, wholepicid = picid;
+		uint8_t mbit = (vp9pd & 0x80);
+		if(!mbit) {
+			buffer++;
+			len--;
+		} else {
+			memcpy(&picid, buffer, sizeof(uint16_t));
+			wholepicid = ntohs(picid);
+			picid = (wholepicid & 0x7FFF);
+			buffer += 2;
+			len -= 2;
+		}
+	}
+	if(lbit) {
+		buffer++;
+		len--;
+		if(!fbit) {
+			/* Non-flexible mode, skip TL0PICIDX */
+			buffer++;
+			len--;
+		}
+	}
+	if(fbit && pbit) {
+		/* Skip reference indices */
+		uint8_t nbit = 1;
+		while(nbit) {
+			vp9pd = *buffer;
+			nbit = (vp9pd & 0x01);
+			buffer++;
+			len--;
+			if(len == 0)	/* Make sure we don't overflow */
+				return resolution;
+		}
+	}
+	if(vbit) {
+		/* Parse and skip SS */
+		vp9pd = *buffer;
+		uint n_s = (vp9pd & 0xE0) >> 5;
+		n_s++;
+		uint8_t ybit = (vp9pd & 0x10);
+		if(ybit) {
+			/* Iterate on all spatial layers and get resolution */
+			buffer++;
+			len--;
+			if(len == 0)	/* Make sure we don't overflow */
+				return resolution;
+			uint i=0;
+			for(i=0; i<n_s && len>=4; i++,len-=4) {
+				/* Width */
+				uint16_t w;
+				memcpy(&w, buffer, sizeof(uint16_t));
+				int vp9w = ntohs(w);
+				buffer += 2;
+				/* Height */
+				uint16_t h;
+				memcpy(&h, buffer, sizeof(uint16_t));
+				int vp9h = ntohs(h);
+				buffer += 2;
+				if(vp9w || vp9h) {
+					json_object_set_new(resolution, "width", json_integer(vp9w));
+					json_object_set_new(resolution, "height", json_integer(vp9h));
+
+					JANUS_LOG(LOG_HUGE, "VP9 key frame resolution: %dx%d\n", vp9w, vp9h);
+					return resolution;
+				}
+			}
+		}
+	}
+	/* If we got here it's not a key frame */
+	return resolution;
 }
 
 gboolean janus_h264_is_keyframe(const char *buffer, int len) {
