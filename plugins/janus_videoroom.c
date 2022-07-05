@@ -5791,15 +5791,13 @@ void janus_videoroom_incoming_rtp(janus_plugin_session *handle, janus_plugin_rtp
 				}
 				if(participant->vcodec == JANUS_VIDEOCODEC_VP8) {
 					if(janus_vp8_is_keyframe(payload, plen)) {
-						ps->fir_latest = now;
+						participant->fir_latest = now;
 
 						janus_mutex_lock(&videoroom->mutex);
 						json_t *event = json_object();
 						json_object_set_new(event, "videoroom", json_string("keyframe"));
 						json_object_set_new(event, "room", string_ids ? json_string(videoroom->room_id_str) : json_integer(videoroom->room_id));
 						json_object_set_new(event, "id", string_ids ? json_string(participant->user_id_str) : json_integer(participant->user_id));
-						json_object_set_new(event, "mindex", json_integer(ps->mindex));
-						json_object_set_new(event, "mid", json_string(ps->mid));
 						json_object_set_new(event, "resolution", janus_vp8_get_keyframe_resolution(payload, plen));
 
 						janus_videoroom_notify_participants(participant, event, TRUE);
@@ -5812,15 +5810,13 @@ void janus_videoroom_incoming_rtp(janus_plugin_session *handle, janus_plugin_rtp
 					}
 				} else if(participant->vcodec == JANUS_VIDEOCODEC_VP9) {
 					if(janus_vp9_is_keyframe(payload, plen)) {
-						ps->fir_latest = now;
+						participant->fir_latest = now;
 
 						janus_mutex_lock(&videoroom->mutex);
 						json_t *event = json_object();
 						json_object_set_new(event, "videoroom", json_string("keyframe"));
 						json_object_set_new(event, "room", string_ids ? json_string(videoroom->room_id_str) : json_integer(videoroom->room_id));
 						json_object_set_new(event, "id", string_ids ? json_string(participant->user_id_str) : json_integer(participant->user_id));
-						json_object_set_new(event, "mindex", json_integer(ps->mindex));
-						json_object_set_new(event, "mid", json_string(ps->mid));
 						json_object_set_new(event, "resolution", janus_vp9_get_keyframe_resolution(payload, plen));
 
 						janus_videoroom_notify_participants(participant, event, TRUE);
