@@ -114,7 +114,10 @@ $(document).ready(function() {
 													// Publish our stream
 													mixertest.createOffer(
 														{
-															media: { video: false },	// This is an audio only room
+															// We only want bidirectional audio
+															tracks: [
+																{ type: 'audio', capture: true, recv: true },
+															],
 															customizeSdp: function(jsep) {
 																if(stereo && jsep.sdp.indexOf("stereo=1") == -1) {
 																	// Make sure that our offer contains stereo too
@@ -301,22 +304,11 @@ $(document).ready(function() {
 										return;
 									if(!on) {
 										// Track removed, get rid of the stream and the rendering
-										if(remoteStream) {
-											try {
-												var tracks = remoteStream.getTracks();
-												for(var i in tracks) {
-													var mst = tracks[i];
-													if(mst)
-														mst.stop();
-												}
-											} catch(e) {}
-										}
 										remoteStream = null;
 										$('#roomaudio').remove();
 										return;
 									}
-									remoteStream = new MediaStream();
-									remoteStream.addTrack(track.clone());
+									remoteStream = new MediaStream([track]);
 									$('#room').removeClass('hide').show();
 									if($('#roomaudio').length === 0) {
 										$('#mixedaudio').append('<audio class="rounded centered" id="roomaudio" width="100%" height="100%" autoplay/>');

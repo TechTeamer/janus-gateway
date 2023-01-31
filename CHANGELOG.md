@@ -3,6 +3,82 @@
 All notable changes to this project will be documented in this file.
 
 
+## [v1.1.2] - 2023-01-17
+
+- Always add mid to the SDP, even for disabled m-lines
+- Don't allow mid changes for m-line during renegotiations [[PR-3136](https://github.com/meetecho/janus-gateway/pull/3136)]
+- Consider RTCP feedback messages when evaluating receiver SSRC
+- Added partial support for L16 codec (uncompressed audio) [[PR-3116](https://github.com/meetecho/janus-gateway/pull/3116)]
+- Fixed overwriting of 7-bit PictureID when doing VP8 simulcast [[PR-3121](https://github.com/meetecho/janus-gateway/pull/3121)]
+- Send data stats when using event handlers [[PR-3126](https://github.com/meetecho/janus-gateway/pull/3126)]
+- Copy formats from datachannel m-lines also when rejecting them [[Issue-3134](https://github.com/meetecho/janus-gateway/issues/3134)]
+- Fixed compiler issue with recent versions of libcurl (thanks @bkmgit!) [[PR-3138](https://github.com/meetecho/janus-gateway/pull/3138)]
+- Close mountpoint sockets when leaving relay thread [[PR-3143](https://github.com/meetecho/janus-gateway/pull/3143)]
+- Fixed segfault in SIP plugin in case of broken SUBSCRIBE [[Issue-3133](https://github.com/meetecho/janus-gateway/issues/3133)]
+- Support multiple requests in a single websocket message (thanks @jwittner!) [[PR-3123](https://github.com/meetecho/janus-gateway/pull/3123)]
+- Fixed inability to add recvonly tracks in janus.js ([[Issue-3119](https://github.com/meetecho/janus-gateway/issues/3119)]
+- Updated janus.d.ts type definitions (thanks @jerry4718!) [[PR-3125](https://github.com/meetecho/janus-gateway/pull/3125)]
+- Fixed out of range error when passing large SSRC values to pcap2mjr
+- Other smaller fixes and improvements (thanks to all who contributed pull requests and reported issues!)
+
+## [v1.1.1] - 2022-12-07
+
+- Added timing info on ICE starting and gathering done to Admin API
+- Fixed rare crash when generating SDP to send [[Issue-3081](https://github.com/meetecho/janus-gateway/issues/3081)]
+- Fixed rare crash when checking payload types (thanks @zevarito!) [[PR-3086](3086)]
+- Fixed double a=ssrc attribute in SDP for inactive m-line
+- Replaced non-portable strcasestr() with strncasecmp() (thanks @iskraman!) [[PR-3076](https://github.com/meetecho/janus-gateway/pull/3076)]
+- Fixed parameters not being URL-encoded when using TURN REST API [[Issue-3112](https://github.com/meetecho/janus-gateway/issues/3112)]
+- Fixed renegotiation sent to VideoRoom subscribers when a room is destroyed [[Issue-3083](https://github.com/meetecho/janus-gateway/issues/3083)]
+- Added option to prevent automatic SDP offer updates to VideoRoom subscribers when a publisher leaves
+- Fixed "send" property not being automatically reset to "true" in the VideoRoom for new subscriptions
+- Fixed small memory leak in AudioBridge (thanks @RSATom!) [[PR-3088](https://github.com/meetecho/janus-gateway/pull/3088)]
+- Minor fixes to the Streaming plugin
+- Enforced media direction policies when SIP call is on hold [PR-3087](https://github.com/meetecho/janus-gateway/pull/3087)]
+- Added code to send PLI to SIP peer when recording [[PR-3093](https://github.com/meetecho/janus-gateway/pull/3093)]
+- Fixed renegotiations in VideoCall not updating session properties
+- Other smaller fixes and improvements (thanks to all who contributed pull requests and reported issues!)
+
+## [v1.1.0] - 2022-10-03
+
+- Added versioning to .so files [[PR-3075](https://github.com/meetecho/janus-gateway/pull/3075)]
+- Allow plugins to specify msid in SDPs [[PR-2998](https://github.com/meetecho/janus-gateway/pull/2998)]
+- Fixed broken RTCP timestamp on 32bit architectures [[Issue-3045](https://github.com/meetecho/janus-gateway/issues/3045)]
+- Fixed problems compiling against recent versions of libwebsockets [[Issue-3039](https://github.com/meetecho/janus-gateway/issues/3039)]
+- Updated deprecated DTLS functions to OpenSSL v3.0 [PR-3048](https://github.com/meetecho/janus-gateway/pull/3048)]
+- Switched to SHA256 for signing self signed DTLS certificates (thanks @tgabi333!) [[PR-3069](https://github.com/meetecho/janus-gateway/pull/3069)]
+- Started using strnlen to optimize performance of some strlen calls (thanks @tmatth!) [[PR-3059](https://github.com/meetecho/janus-gateway/pull/3059)]
+- Added checks to avoid RTX payload type collisions [[PR-3080](https://github.com/meetecho/janus-gateway/pull/3080)]
+- Added new APIs for cascading VideoRoom publishers [[PR-3014](https://github.com/meetecho/janus-gateway/pull/3014)]
+- Fixed deadlock when using legacy switch in VideoRoom [[Issue-3066](https://github.com/meetecho/janus-gateway/issues/3066)]
+- Fixed disabled property not being advertized to subscribers when VideoRoom publishers removed tracks
+- Fixed occasional deadlock when using G.711 in the AudioBridge [[Issue-3062](https://github.com/meetecho/janus-gateway/issues/3062)]
+- Added new way of capturing devices/tracks in janus.js [[PR-3003](https://github.com/meetecho/janus-gateway/pull/3003)]
+- Removed call to .stop() for remote tracks in demos [[PR-3056](https://github.com/meetecho/janus-gateway/pull/3056)]
+- Fixed missing message/info/transfer buttons in SIP demo page
+- Fixed postprocessing compilation issue on older FFmpeg versions [[PR-3064](https://github.com/meetecho/janus-gateway/pull/3064)]
+- Other smaller fixes and improvements (thanks to all who contributed pull requests and reported issues!)
+
+## [v1.0.4] - 2022-08-01
+
+- Fixed problem with duplicate ptypes when codecs are added in renegotiations
+- Added codec info to event handlers stats
+- Allow offers to include other roles besides 'actpass' for DTLS [[PR-3020](https://github.com/meetecho/janus-gateway/pull/3020)]
+- Fixed rare race conditions when attempting to relay packets sent by plugins [[PR-3010](https://github.com/meetecho/janus-gateway/pull/3010)]
+- Fixed unprotected access to medium instances in janus_plugin_handle_sdp
+- Set appropriate channel type when sending DATA_CHANNEL_OPEN_REQUEST message (thanks @ktyu!) [[PR-3018](https://github.com/meetecho/janus-gateway/pull/3018)]
+- Fixed rare race condition when handling incoming RTCP feedback in VideoRoom
+- Fixed memory leak in VideoRoom when using rid-based simulcast (thanks @OxleyS!) [[PR-2995](https://github.com/meetecho/janus-gateway/pull/2995)]
+- Fixed IPv6 always enabled for VideoRoom RTP forwarders [[Issue-3011](https://github.com/meetecho/janus-gateway/issues/3011)]
+- Start recording VideoRoom publisher on PeerConnection establishment, if needed (thanks @adnanel!) [[PR-3013](https://github.com/meetecho/janus-gateway/pull/3013)]
+- Added an optional ID in subscribe requests to match with subscription events (thanks @JanFellner!) [[PR-3027](https://github.com/meetecho/janus-gateway/pull/3027)]
+- Make Streaming plugin use SDP utils, and codecs instead of rtpmaps [[PR-2994](https://github.com/meetecho/janus-gateway/pull/2994)]
+- Check response codes of RTSP requests in Streaming plugin [[Issue-3015](https://github.com/meetecho/janus-gateway/issues/3015)]
+- Fixed small memory leak in SIP plugin [[Issue-3032](https://github.com/meetecho/janus-gateway/issues/3032)]
+- Fixed broken simulcast support in Lua and Duktape plugins
+- Don't use .clone() on tracks to render them in demos [[PR-3009](https://github.com/meetecho/janus-gateway/pull/3009)]
+- Other smaller fixes and improvements (thanks to all who contributed pull requests and reported issues!)
+
 ## [v1.0.3] - 2022-06-20
 
 - Keep track of RTP extensions when storing packets for retransmission [[PR-2981](https://github.com/meetecho/janus-gateway/pull/2981)]
@@ -696,13 +772,13 @@ All notable changes to this project will be documented in this file.
 - Added several fixes to RTP/RTCP parsing after fuzzing tests
 - Added fixes to keyframe detection after fuzzing tests
 - Fixed some demos not working after update to Chrome 72
-- Fixed occasional crashes when saving .jfcg files (e.g., saving permanent Streaming mountpoints)
+- Fixed occasional crashes when saving .jcfg files (e.g., saving permanent Streaming mountpoints)
 - Added new Admin API command to temporarily stop/resume accepting sessions (e.g., for draining servers)
 - Fixed recordings sometimes not closed/destroyed/renamed when hanging up SIP sessions
 - Added option to SIP/SIPre/NoSIP plugin to override c= IP in SDP
 - Fixed missing RTSP support in Streaming plugin if TURN REST API was disabled in configure
 - Fixed Streaming plugin not returning complete information on secret-less mountpoints (thanks @Musashi178!)
-- Fixed missing .jfcg support in Duktape plugin (thanks @fbertone!)
+- Fixed missing .jcfg support in Duktape plugin (thanks @fbertone!)
 - Updated janus.js to use transceivers for Chrome >=72
 - Other smaller fixes and improvements (thanks to all who contributed pull requests and reported issues!)
 

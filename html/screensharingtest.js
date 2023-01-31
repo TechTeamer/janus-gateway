@@ -136,7 +136,11 @@ $(document).ready(function() {
 													bootbox.alert("Safari requires a user gesture before the screen can be shared: close this dialog to do that. See issue #2455 for more details", function() {
 														screentest.createOffer(
 															{
-																media: { video: capture, audioSend: true, videoRecv: false},	// Screen sharing Publishers are sendonly
+																// We want to capture the screen and audio, but sendonly
+																tracks: [
+																	{ type: 'audio', capture: true, recv: false },
+																	{ type: 'screen', capture: true, recv: false }
+																],
 																success: function(jsep) {
 																	Janus.debug("Got publisher SDP!", jsep);
 																	var publish = { request: "configure", audio: true, video: true };
@@ -152,7 +156,11 @@ $(document).ready(function() {
 													// Other browsers should be fine, we try to call getDisplayMedia directly
 													screentest.createOffer(
 														{
-															media: { video: capture, audioSend: true, videoRecv: false},	// Screen sharing Publishers are sendonly
+															// We want sendonly audio and screensharing
+															tracks: [
+																{ type: 'audio', capture: true, recv: false },
+																{ type: 'screen', capture: true, recv: false }
+															],
 															success: function(jsep) {
 																Janus.debug("Got publisher SDP!", jsep);
 																var publish = { request: "configure", audio: true, video: true };
@@ -269,8 +277,7 @@ $(document).ready(function() {
 										// New video track: create a stream out of it
 										localVideos++;
 										$('#screencapture .no-video-container').remove();
-										stream = new MediaStream();
-										stream.addTrack(track.clone());
+										stream = new MediaStream([track]);
 										localTracks[trackId] = stream;
 										Janus.log("Created local stream:", stream);
 										$('#screencapture').append('<video class="rounded centered" id="screenvideo' + trackId + '" width=100% autoplay playsinline muted="muted"/>');
@@ -327,7 +334,7 @@ function checkEnterShare(field, event) {
 
 function preShareScreen() {
 	if(!Janus.isExtensionEnabled()) {
-		bootbox.alert("You're using Chrome but don't have the screensharing extension installed: click <b><a href='https://chrome.google.com/webstore/detail/janus-webrtc-screensharin/hapfgfdkleiggjjpfpenajgdnfckjpaj' target='_blank'>here</a></b> to do so", function() {
+		bootbox.alert("This browser doesn't support screensharing (getDisplayMedia unavailable)", function() {
 			window.location.reload();
 		});
 		return;
@@ -346,39 +353,7 @@ function preShareScreen() {
 		return;
 	}
 	capture = "screen";
-	if(navigator.mozGetUserMedia) {
-		// Firefox needs a different constraint for screen and window sharing
-		bootbox.dialog({
-			title: "Share whole screen or a window?",
-			message: "Firefox handles screensharing in a different way: are you going to share the whole screen, or would you rather pick a single window/application to share instead?",
-			buttons: {
-				screen: {
-					label: "Share screen",
-					className: "btn-primary",
-					callback: function() {
-						capture = "screen";
-						shareScreen();
-					}
-				},
-				window: {
-					label: "Pick a window",
-					className: "btn-success",
-					callback: function() {
-						capture = "window";
-						shareScreen();
-					}
-				}
-			},
-			onEscape: function() {
-				$('#desc').removeAttr('disabled', true);
-				$('#create').removeAttr('disabled', true).click(preShareScreen);
-				$('#roomid').removeAttr('disabled', true);
-				$('#join').removeAttr('disabled', true).click(joinScreen);
-			}
-		});
-	} else {
-		shareScreen();
-	}
+	shareScreen();
 }
 
 function shareScreen() {
@@ -392,6 +367,10 @@ function shareScreen() {
 		publishers: 1
 	};
 	screentest.send({ message: create, success: function(result) {
+		if(result["error"]) {
+			bootbox.alert("Couldn't create room: " + result["error"]);
+			return;
+		}
 		var event = result["videoroom"];
 		Janus.debug("Event: " + event);
 		if(event) {
@@ -510,7 +489,13 @@ function newRemoteFeed(id, display) {
 					remoteFeed.createAnswer(
 						{
 							jsep: jsep,
-							media: { audioSend: false, videoSend: false },	// We want recvonly audio/video
+							// We only specify data channels here, as this way in
+							// case they were offered we'll enable them. Since we
+							// don't mention audio or video tracks, we autoaccept them
+							// as recvonly (since we won't capture anything ourselves)
+							tracks: [
+								{ type: 'data' }
+							],
 							success: function(jsep) {
 								Janus.debug("Got SDP!", jsep);
 								var body = { request: "start", room: room };
@@ -530,17 +515,6 @@ function newRemoteFeed(id, display) {
 				Janus.debug("Remote track (mid=" + mid + ") " + (on ? "added" : "removed") + ":", track);
 				if(!on) {
 					// Track removed, get rid of the stream and the rendering
-					var stream = remoteTracks[mid];
-					if(stream) {
-						try {
-							var tracks = stream.getTracks();
-							for(var i in tracks) {
-								var mst = tracks[i];
-								if(mst)
-									mst.stop();
-							}
-						} catch(e) {}
-					}
 					$('#screenvideo' + mid).remove();
 					if(track.kind === "video") {
 						remoteVideos--;
@@ -565,8 +539,7 @@ function newRemoteFeed(id, display) {
 				}
 				if(track.kind === "audio") {
 					// New audio track: create a stream out of it, and use a hidden <audio> element
-					stream = new MediaStream();
-					stream.addTrack(track.clone());
+					stream = new MediaStream([track]);
 					remoteTracks[mid] = stream;
 					Janus.log("Created remote audio stream:", stream);
 					$('#screencapture').append('<audio class="hide" id="screenvideo' + mid + '" playsinline/>');
@@ -588,8 +561,7 @@ function newRemoteFeed(id, display) {
 					// New video track: create a stream out of it
 					remoteVideos++;
 					$('#screencapture .no-video-container').remove();
-					stream = new MediaStream();
-					stream.addTrack(track.clone());
+					stream = new MediaStream([track]);
 					remoteFeed.remoteTracks[mid] = stream;
 					Janus.log("Created remote video stream:", stream);
 					$('#screencapture').append('<video class="rounded centered" id="screenvideo' + mid + '" width=100% playsinline/>');

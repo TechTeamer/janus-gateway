@@ -327,8 +327,7 @@ $(document).ready(function() {
 										// New video track: create a stream out of it
 										localVideos++;
 										$('#videolocal .no-video-container').remove();
-										stream = new MediaStream();
-										stream.addTrack(track.clone());
+										stream = new MediaStream([track]);
 										localTracks[trackId] = stream;
 										Janus.log("Created local stream:", stream);
 										Janus.log(stream.getTracks());
@@ -429,10 +428,18 @@ function registerUsername() {
 function publishOwnFeed(useAudio) {
 	// Publish our stream
 	$('#publish').attr('disabled', true).unbind('click');
+
+	// We want sendonly audio and video (uncomment the data track
+	// too if you want to publish via datachannels as well)
+	let tracks = [];
+	if(useAudio)
+		tracks.push({ type: 'audio', capture: true, recv: false });
+	tracks.push({ type: 'video', capture: true, recv: false, simulcast: doSimulcast });
+	//~ tracks.push({ type: 'data' });
+
 	sfutest.createOffer(
 		{
-			// Add data:true here if you want to publish datachannels as well
-			media: { audioRecv: false, videoRecv: false, audioSend: useAudio, videoSend: true },	// Publishers are sendonly
+			tracks: tracks,
 			success: function(jsep) {
 				Janus.debug("Got publisher SDP!", jsep);
 				var publish = { request: "configure", audio: useAudio, video: true };
@@ -575,9 +582,13 @@ function newRemoteFeed(id, display, streams) {
 					remoteFeed.createAnswer(
 						{
 							jsep: jsep,
-							// Add data:true here if you want to subscribe to datachannels as well
-							// (obviously only works if the publisher offered them in the first place)
-							media: { audioSend: false, videoSend: false },	// We want recvonly audio/video
+							// We only specify data channels here, as this way in
+							// case they were offered we'll enable them. Since we
+							// don't mention audio or video tracks, we autoaccept them
+							// as recvonly (since we won't capture anything ourselves)
+							tracks: [
+								{ type: 'data' }
+							],
 							success: function(jsep) {
 								Janus.debug("Got SDP!", jsep);
 								var body = { request: "start", room: myroom };
@@ -597,17 +608,6 @@ function newRemoteFeed(id, display, streams) {
 				Janus.debug("Remote feed #" + remoteFeed.rfindex + ", remote track (mid=" + mid + ") " + (on ? "added" : "removed") + ":", track);
 				if(!on) {
 					// Track removed, get rid of the stream and the rendering
-					var stream = remoteFeed.remoteTracks[mid];
-					if(stream) {
-						try {
-							var tracks = stream.getTracks();
-							for(var i in tracks) {
-								var mst = tracks[i];
-								if(mst !== null && mst !== undefined)
-									mst.stop();
-							}
-						} catch(e) {}
-					}
 					$('#remotevideo'+remoteFeed.rfindex + '-' + mid).remove();
 					if(track.kind === "video") {
 						remoteFeed.remoteVideos--;
@@ -634,8 +634,7 @@ function newRemoteFeed(id, display, streams) {
 					return;
 				if(track.kind === "audio") {
 					// New audio track: create a stream out of it, and use a hidden <audio> element
-					stream = new MediaStream();
-					stream.addTrack(track.clone());
+					stream = new MediaStream([track]);
 					remoteFeed.remoteTracks[mid] = stream;
 					Janus.log("Created remote audio stream:", stream);
 					$('#videoremote'+remoteFeed.rfindex).append('<audio class="hide" id="remotevideo' + remoteFeed.rfindex + '-' + mid + '" autoplay playsinline/>');
@@ -654,8 +653,7 @@ function newRemoteFeed(id, display, streams) {
 					// New video track: create a stream out of it
 					remoteFeed.remoteVideos++;
 					$('#videoremote'+remoteFeed.rfindex + ' .no-video-container').remove();
-					stream = new MediaStream();
-					stream.addTrack(track.clone());
+					stream = new MediaStream([track]);
 					remoteFeed.remoteTracks[mid] = stream;
 					Janus.log("Created remote video stream:", stream);
 					$('#videoremote'+remoteFeed.rfindex).append('<video class="rounded centered" id="remotevideo' + remoteFeed.rfindex + '-' + mid + '" width=100% autoplay playsinline/>');

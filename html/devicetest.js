@@ -87,8 +87,51 @@ function initDevices(devices) {
 	});
 }
 
+var firstOffer = true;
 function restartCapture() {
-	// Negotiate WebRTC
+	let replaceAudio = $('#audio-device').val() !== audioDeviceId;
+	audioDeviceId = $('#audio-device').val();
+	let replaceVideo = $('#video-device').val() !== videoDeviceId;
+	videoDeviceId = $('#video-device').val();
+	if(!firstOffer) {
+		if(!replaceAudio && !replaceVideo) {
+			// Nothing to do, reset devices controls
+			$('#audio-device, #video-device').removeAttr('disabled');
+			$('#change-devices').removeAttr('disabled');
+			return;
+		}
+		// Just replacing tracks, no need for a renegotiation
+		let tracks = [];
+		if(replaceAudio) {
+			tracks.push({
+				type: 'audio',
+				mid: '0',	// We assume mid 0 is audio
+				capture: { deviceId: { exact: audioDeviceId } }
+			});
+		}
+		if(replaceVideo) {
+			tracks.push({
+				type: 'video',
+				mid: '1',	// We assume mid 1 is video
+				capture: { deviceId: { exact: videoDeviceId } }
+			});
+		}
+		// We use the replaceTracks helper function, that will in turn
+		// call the WebRTC replaceTrack API with the info we requested,
+		// without the need to do any renegotiation on the PeerConnection
+		echotest.replaceTracks({
+			tracks: tracks,
+			error: function(err) {
+				bootbox.alert(err.message);
+			}
+		});
+		// Reset devices controls
+		$('#audio-device, #video-device').removeAttr('disabled');
+		$('#change-devices').removeAttr('disabled');
+		return;
+	}
+	// We're only now starting, create a new PeerConnection
+	firstOffer = false;
 	var body = { audio: true, video: true };
 	// We can try and force a specific codec, by telling the plugin what we'd prefer
 	// For simplicity, you can set it via a query string (e.g., ?vcodec=vp9)
@@ -100,35 +143,15 @@ function restartCapture() {
 	// profile as well (e.g., ?vprofile=2 for VP9, or ?vprofile=42e01f for H.264)
 	if(vprofile)
 		body["videoprofile"] = vprofile;
-	Janus.debug("Sending message:", body);
-	echotest.send({ message: body });
 	Janus.debug("Trying a createOffer too (audio/video sendrecv)");
-	var replaceAudio = $('#audio-device').val() !== audioDeviceId;
-	audioDeviceId = $('#audio-device').val();
-	var replaceVideo = $('#video-device').val() !== videoDeviceId;
-	videoDeviceId = $('#video-device').val();
 	echotest.createOffer(
 		{
 			// We provide a specific device ID for both audio and video
-			media: {
-				audio: {
-					deviceId: {
-						exact: audioDeviceId
-					}
-				},
-				replaceAudio: replaceAudio,	// This is only needed in case of a renegotiation
-				video: {
-					deviceId: {
-						exact: videoDeviceId
-					}
-				},
-				replaceVideo: replaceVideo,	// This is only needed in case of a renegotiation
-				data: true	// Let's negotiate data channels as well
-			},
-			// If you want to test simulcasting (Chrome and Firefox only), then
-			// pass a ?simulcast=true when opening this demo page: it will turn
-			// the following 'simulcast' property to pass to janus.js to true
-			simulcast: doSimulcast,
+			tracks: [
+				{ type: 'audio', capture: { deviceId: { exact: audioDeviceId }}, recv: true },
+				{ type: 'video', capture: { deviceId: { exact: videoDeviceId }}, recv: true, simulcast: doSimulcast },
+				{ type: 'data' }	// Let's negotiate data channels as well
+			],
 			success: function(jsep) {
 				Janus.debug("Got SDP!", jsep);
 				echotest.send({ message: body, jsep: jsep });
@@ -328,8 +351,7 @@ $(document).ready(function() {
 										// New video track: create a stream out of it
 										localVideos++;
 										$('#videoleft .no-video-container').remove();
-										stream = new MediaStream();
-										stream.addTrack(track.clone());
+										stream = new MediaStream([track]);
 										localTracks[trackId] = stream;
 										Janus.log("Created local stream:", stream);
 										$('#videoleft').append('<video class="rounded centered" id="myvideo' + trackId + '" width="100%" height="100%" autoplay playsinline muted="muted"/>');
@@ -354,17 +376,6 @@ $(document).ready(function() {
 									Janus.debug("Remote track (mid=" + mid + ") " + (on ? "added" : "removed") + ":", track);
 									if(!on) {
 										// Track removed, get rid of the stream and the rendering
-										var stream = remoteTracks[mid];
-										if(stream) {
-											try {
-												var tracks = stream.getTracks();
-												for(var i in tracks) {
-													var mst = tracks[i];
-													if(mst)
-														mst.stop();
-												}
-											} catch(e) {}
-										}
 										$('#peervideo' + mid).remove();
 										if(track.kind === "video") {
 											remoteVideos--;
@@ -390,8 +401,7 @@ $(document).ready(function() {
 									}
 									if(track.kind === "audio") {
 										// New audio track: create a stream out of it, and use a hidden <audio> element
-										stream = new MediaStream();
-										stream.addTrack(track.clone());
+										stream = new MediaStream([track]);
 										remoteTracks[mid] = stream;
 										Janus.log("Created remote audio stream:", stream);
 										if($('#peervideo'+mid).length === 0)
@@ -411,8 +421,7 @@ $(document).ready(function() {
 										// New video track: create a stream out of it
 										remoteVideos++;
 										$('#videoright .no-video-container').remove();
-										stream = new MediaStream();
-										stream.addTrack(track.clone());
+										stream = new MediaStream([track]);
 										remoteTracks[mid] = stream;
 										Janus.log("Created remote video stream:", stream);
 										if($('#peervideo'+mid).length === 0)

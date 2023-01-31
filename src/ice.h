@@ -272,6 +272,10 @@ typedef enum janus_media_type {
 	JANUS_MEDIA_VIDEO,
 	JANUS_MEDIA_DATA
 } janus_media_type;
+/*! \brief Helper method to get the string associated to a janus_media_mtype value
+ * @param[in] type The type to stringify
+ * @returns The type as a string, if valid, or NULL otherwise */
+const char *janus_media_type_str(janus_media_type type);
 
 /*! \brief Janus media statistics
  * \note To improve with more stuff */
@@ -362,6 +366,8 @@ struct janus_ice_handle {
 	NiceAgent *agent;
 	/*! \brief Monotonic time of when the ICE agent has been created */
 	gint64 agent_created;
+	/*! \brief Monotonic time of when the ICE agent has been started (remote credentials set) */
+	gint64 agent_started;
 	/*! \brief ICE role (controlling or controlled) */
 	gboolean controlling;
 	/*! \brief Main mid */
@@ -416,6 +422,8 @@ struct janus_ice_peerconnection {
 	gint cdone:1;
 	/*! \brief libnice ICE component state */
 	guint state;
+	/*! \brief Monotonic time of when gathering has completed */
+	gint64 gathered;
 	/*! \brief Monotonic time of when ICE has successfully connected */
 	gint64 connected;
 	/*! \brief GLib list of libnice remote candidates for this component */
@@ -491,6 +499,14 @@ struct janus_ice_peerconnection {
 	 * or video m-line, in order to make it easier for plugins that don't do
 	 * multistream. That said, we don't plan to keep it forever */
 	GHashTable *media_bytype;
+	/*! \brief List of payload types we can expect */
+	GHashTable *payload_types;
+	/*! \brief Mapping of payload types to their clock rates, as advertised in the SDP */
+	GHashTable *clock_rates;
+	/*! \brief Mapping of rtx payload types to actual media-related packet types */
+	GHashTable *rtx_payload_types;
+	/*! \brief Reverse mapping of rtx payload types to actual media-related packet types */
+	GHashTable *rtx_payload_types_rev;
 	/*! \brief Helper flag to avoid flooding the console with the same error all over again */
 	gboolean noerrorlog;
 	/*! \brief Mutex to lock/unlock this stream */
@@ -512,6 +528,8 @@ struct janus_ice_peerconnection_medium {
 	int mindex;
 	/*! \brief Media ID */
 	char *mid;
+	/*! \brief Media Stream ID info */
+	char *msid, *mstid, *remote_msid, *remote_mstid;
 	/*! \brief SSRC of the server for this medium */
 	guint32 ssrc;
 	/*! \brief Retransmission SSRC of the server for this medium */
@@ -720,8 +738,9 @@ void janus_ice_notify_media_stopped(janus_ice_handle *handle);
  * @param[in] handle The Janus ICE handle this method refers to
  * @param[in] offer Whether this is for an OFFER or an ANSWER
  * @param[in] trickle Whether ICE trickling is supported or not
+ * @param[in] dtls_role The DTLS role that should be taken for this PeerConnection
  * @returns 0 in case of success, a negative integer otherwise */
-int janus_ice_setup_local(janus_ice_handle *handle, gboolean offer, gboolean trickle);
+int janus_ice_setup_local(janus_ice_handle *handle, gboolean offer, gboolean trickle, janus_dtls_role dtls_role);
 /*! \brief Method to add local candidates to a janus_sdp SDP object representation
  * @param[in] handle The Janus ICE handle this method refers to
  * @param[in] mline The Janus SDP m-line object to add candidates to

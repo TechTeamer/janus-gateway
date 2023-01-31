@@ -145,12 +145,13 @@ $(document).ready(function() {
 																videocall.createAnswer(
 																	{
 																		jsep: jsep,
-																		// No media provided: by default, it's sendrecv for audio and video
-																		media: { data: true },	// Let's negotiate data channels as well
-																		// If you want to test simulcasting (Chrome and Firefox only), then
-																		// pass a ?simulcast=true when opening this demo page: it will turn
-																		// the following 'simulcast' property to pass to janus.js to true
-																		simulcast: doSimulcast,
+																		// We want bidirectional audio and video, if offered,
+																		// plus data channels too if they were negotiated
+																		tracks: [
+																			{ type: 'audio', capture: true, recv: true },
+																			{ type: 'video', capture: true, recv: true },
+																			{ type: 'data' },
+																		],
 																		success: function(jsep) {
 																			Janus.debug("Got SDP!", jsep);
 																			var body = { request: "accept" };
@@ -200,7 +201,13 @@ $(document).ready(function() {
 														videocall.createAnswer(
 															{
 																jsep: jsep,
-																media: { data: true },	// Let's negotiate data channels as well
+																// We want bidirectional audio and video, if offered,
+																// plus data channels too if they were negotiated
+																tracks: [
+																	{ type: 'audio', capture: true, recv: true },
+																	{ type: 'video', capture: true, recv: true },
+																	{ type: 'data' },
+																],
 																success: function(jsep) {
 																	Janus.debug("Got SDP!", jsep);
 																	var body = { request: "set" };
@@ -333,8 +340,7 @@ $(document).ready(function() {
 										// New video track: create a stream out of it
 										localVideos++;
 										$('#videoleft .no-video-container').remove();
-										stream = new MediaStream();
-										stream.addTrack(track.clone());
+										stream = new MediaStream([track]);
 										localTracks[trackId] = stream;
 										Janus.log("Created local stream:", stream);
 										$('#videoleft').append('<video class="rounded centered" id="myvideo' + trackId + '" width="100%" height="100%" autoplay playsinline muted="muted"/>');
@@ -356,17 +362,6 @@ $(document).ready(function() {
 									Janus.debug("Remote track (mid=" + mid + ") " + (on ? "added" : "removed") + ":", track);
 									if(!on) {
 										// Track removed, get rid of the stream and the rendering
-										var stream = remoteTracks[mid];
-										if(stream) {
-											try {
-												var tracks = stream.getTracks();
-												for(var i in tracks) {
-													var mst = tracks[i];
-													if(mst)
-														mst.stop();
-												}
-											} catch(e) {}
-										}
 										$('#peervideo' + mid).remove();
 										if(track.kind === "video") {
 											remoteVideos--;
@@ -392,8 +387,7 @@ $(document).ready(function() {
 									}
 									if(track.kind === "audio") {
 										// New audio track: create a stream out of it, and use a hidden <audio> element
-										stream = new MediaStream();
-										stream.addTrack(track.clone());
+										stream = new MediaStream([track]);
 										remoteTracks[mid] = stream;
 										Janus.log("Created remote audio stream:", stream);
 										$('#videoright').append('<audio class="hide" id="peervideo' + mid + '" autoplay playsinline/>');
@@ -412,8 +406,7 @@ $(document).ready(function() {
 										// New video track: create a stream out of it
 										remoteVideos++;
 										$('#videoright .no-video-container').remove();
-										stream = new MediaStream();
-										stream.addTrack(track.clone());
+										stream = new MediaStream([track]);
 										remoteTracks[mid] = stream;
 										Janus.log("Created remote video stream:", stream);
 										$('#videoright').append('<video class="rounded centered" id="peervideo' + mid + '" width="100%" height="100%" autoplay playsinline/>');
@@ -583,12 +576,12 @@ function doCall() {
 	// Call this user
 	videocall.createOffer(
 		{
-			// By default, it's sendrecv for audio and video...
-			media: { data: true },	// ... let's negotiate data channels as well
-			// If you want to test simulcasting (Chrome and Firefox only), then
-			// pass a ?simulcast=true when opening this demo page: it will turn
-			// the following 'simulcast' property to pass to janus.js to true
-			simulcast: doSimulcast,
+			// We want bidirectional audio and video, plus data channels
+			tracks: [
+				{ type: 'audio', capture: true, recv: true },
+				{ type: 'video', capture: true, recv: true, simulcast: doSimulcast },
+				{ type: 'data' },
+			],
 			success: function(jsep) {
 				Janus.debug("Got SDP!", jsep);
 				var body = { request: "call", username: $('#peer').val() };

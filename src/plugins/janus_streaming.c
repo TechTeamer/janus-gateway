@@ -285,6 +285,7 @@ multistream-test: {
 				{
 					"mid" : "<unique mid of this stream>",
 					"label" : "<unique text label of this stream>",
+					"msid" : "<msid of this stream, if configured>",
 					"type" : "<audio|video|data">,
 					"age_ms" : <how much time passed since we last received media for this stream; optional>,
 				},
@@ -342,6 +343,7 @@ multistream-test: {
 				"mindex" : "<unique mindex of this stream>",
 				"type" : "<audio|video|data">,
 				"label" : "<unique text label of this stream>",
+				"msid" : "<msid of this stream, if configured>",
 				"age_ms" : <how much time passed since we last received media for this stream; optional>,
 				"pt" : <payload type, only present if RTP and configured>,
 				"codec" : "<cocec name value, only present if RTP and configured>",
@@ -388,6 +390,7 @@ multistream-test: {
 		{
 			"type" : "<audio|video|data>",
 			"mid" : "<unique mid to assign to this stream in negotiated PeerConnections>",
+			"msid" : "<msid to add to the m-line, if needed>",
 			"port" : <port to bind to, to receive media to relay>",
 			...
 		}.
@@ -430,6 +433,7 @@ multistream-test: {
 			{
 				"type" : "<audio|video|data>",
 				"mid" : "<unique mid of stream #1>",
+				"msid" : "<msid of this stream, if configured>",
 				"port" : <port the plugin is listening on for this stream's media>
 			},
 			{
@@ -1081,6 +1085,7 @@ static struct janus_json_parameter rtp_media_parameters[] = {
 	{"type", JANUS_JSON_STRING, JANUS_JSON_PARAM_REQUIRED},
 	{"mid", JANUS_JSON_STRING, JANUS_JSON_PARAM_REQUIRED},
 	{"label", JANUS_JSON_STRING, 0},
+	{"msid", JANUS_JSON_STRING, 0},
 	{"mcast", JANUS_JSON_STRING, 0},
 	{"iface", JANUS_JSON_STRING, 0},
 	{"port", JANUS_JSON_INTEGER, JANUS_JSON_PARAM_REQUIRED | JANUS_JSON_PARAM_POSITIVE},
@@ -1298,6 +1303,7 @@ typedef struct janus_streaming_rtp_source {
 #ifdef HAVE_LIBCURL
 	gboolean rtsp;
 	CURL *curl;
+	char *curl_errbuf;
 	janus_streaming_buffer *curldata;
 	char *rtsp_url;
 	char *rtsp_username, *rtsp_password;
@@ -1358,7 +1364,7 @@ static janus_streaming_media janus_streaming_parse_media(const char *type) {
 typedef struct janus_streaming_rtp_source_stream {
 	int mindex;
 	janus_streaming_media type;
-	char *mid, *label;
+	char *mid, *label, *msid, *mstid;
 	janus_streaming_codecs codecs;
 	char *host;
 	gint port[3], remote_port;
@@ -1462,7 +1468,7 @@ static void janus_streaming_helper_rtprtcp_packet(gpointer data, gpointer user_d
 
 /* Helpers to create an RTP live source (e.g., from gstreamer/ffmpeg/vlc/etc.) */
 janus_streaming_rtp_source_stream *janus_streaming_create_rtp_source_stream(
-		const char *name, int mindex, const char *type, const char *mid, const char *label,
+		const char *name, int mindex, const char *type, const char *mid, const char *label, const char *msid,
 		char *mcast, char *miface, const janus_network_address *iface,
 		uint16_t port, uint16_t port2, uint16_t port3, gboolean dortcp, uint16_t rtcpport,
 		uint8_t pt, char *codec, char *fmtp,
@@ -2079,6 +2085,7 @@ int janus_streaming_init(janus_callbacks *callback, const char *config_path) {
 							continue;
 						}
 						janus_config_item *label = janus_config_get(config, m, janus_config_type_item, "label");
+						janus_config_item *msid = janus_config_get(config, m, janus_config_type_item, "msid");
 						/* These are the attributes we can configure per each media stream */
 						janus_network_address media_iface;
 						janus_config_item *iface = janus_config_get(config, m, janus_config_type_item, "iface");
@@ -2152,6 +2159,7 @@ int janus_streaming_init(janus_callbacks *callback, const char *config_path) {
 						janus_streaming_rtp_source_stream *stream = janus_streaming_create_rtp_source_stream(
 							cat->name, g_list_length(streams),
 							type->value, mid->value, (label && label->value ? label->value : type->value),
+							(msid && msid->value ? msid->value : NULL),
 							mcast ? (char *)mcast->value : NULL,
 							iface && iface->value ? (char *)iface->value : NULL,
 							iface && iface->value ? &media_iface : NULL,
@@ -2354,7 +2362,7 @@ int janus_streaming_init(janus_callbacks *callback, const char *config_path) {
 						/* Create the audio source stream */
 						janus_streaming_rtp_source_stream *stream = janus_streaming_create_rtp_source_stream(
 							cat->name, g_list_length(streams),
-							"audio", "a", "audio",
+							"audio", "a", "audio", NULL,
 							amcast ? (char *)amcast->value : NULL,
 							aiface && aiface->value ? (char *)aiface->value : NULL,
 							aiface && aiface->value ? &audio_iface : NULL,
@@ -2376,7 +2384,7 @@ int janus_streaming_init(janus_callbacks *callback, const char *config_path) {
 						/* Create the video source stream */
 						janus_streaming_rtp_source_stream *stream = janus_streaming_create_rtp_source_stream(
 							cat->name, g_list_length(streams),
-							"video", "v", "video",
+							"video", "v", "video", NULL,
 							vmcast ? (char *)vmcast->value : NULL,
 							viface && viface->value ? (char *)viface->value : NULL,
 							viface && viface->value ? &video_iface : NULL,
@@ -2400,7 +2408,7 @@ int janus_streaming_init(janus_callbacks *callback, const char *config_path) {
 						/* Create the data source stream */
 						janus_streaming_rtp_source_stream *stream = janus_streaming_create_rtp_source_stream(
 							cat->name, g_list_length(streams),
-							"data", "d", "data",
+							"data", "d", "data", NULL,
 							dmcast ? (char *)dmcast->value : NULL,
 							diface && diface->value ? (char *)diface->value : NULL,
 							diface && diface->value ? &data_iface : NULL,
@@ -3006,6 +3014,11 @@ static json_t *janus_streaming_process_synchronous_request(janus_streaming_sessi
 					json_object_set_new(info, "mid", json_string(stream->mid));
 					json_object_set_new(info, "type", json_string(janus_streaming_media_str(stream->type)));
 					json_object_set_new(info, "label", json_string(stream->label));
+					if(stream->msid && stream->mstid) {
+						char msid[150];
+						g_snprintf(msid, sizeof(msid), "%s %s", stream->msid, stream->mstid);
+						json_object_set_new(info, "msid", json_string(msid));
+					}
 					if(stream->fd[0] != -1 || stream->fd[1] != -1 || stream->fd[2] != -1)
 						json_object_set_new(info, "age_ms", json_integer((now - stream->last_received) / 1000));
 					json_array_append_new(media, info);
@@ -3140,6 +3153,11 @@ static json_t *janus_streaming_process_synchronous_request(janus_streaming_sessi
 				json_object_set_new(info, "type", json_string(janus_streaming_media_str(stream->type)));
 				json_object_set_new(info, "mid", json_string(stream->mid));
 				json_object_set_new(info, "label", json_string(stream->label));
+				if(stream->msid && stream->mstid) {
+					char msid[150];
+					g_snprintf(msid, sizeof(msid), "%s %s", stream->msid, stream->mstid);
+					json_object_set_new(info, "msid", json_string(msid));
+				}
 				if(stream->codecs.pt != -1)
 					json_object_set_new(info, "pt", json_integer(stream->codecs.pt));
 				if(stream->codecs.audio_codec != JANUS_AUDIOCODEC_NONE) {
@@ -3350,7 +3368,7 @@ static json_t *janus_streaming_process_synchronous_request(janus_streaming_sessi
 					uint16_t port = 0, port2 = 0, port3 = 0;
 					uint16_t rtcpport = 0;
 					uint8_t pt = 0;
-					char *mtype = NULL, *mid = NULL, *label = NULL, *codec = NULL, *fmtp = NULL, *mcast = NULL, *miface = NULL;
+					char *mtype = NULL, *mid = NULL, *label = NULL, *msid = NULL, *codec = NULL, *fmtp = NULL, *mcast = NULL, *miface = NULL;
 					gboolean doskew = FALSE, bufferkf = FALSE, simulcast = FALSE, dosvc = FALSE, textdata = TRUE, buffermsg = FALSE;
 					json_t *jmtype = json_object_get(m, "type");
 					mtype = (char *)json_string_value(jmtype);
@@ -3368,6 +3386,8 @@ static json_t *janus_streaming_process_synchronous_request(janus_streaming_sessi
 					mid = (char *)json_string_value(jmid);
 					json_t *jlabel = json_object_get(m, "label");
 					label = (char *)json_string_value(jlabel);
+					json_t *jmsid = json_object_get(m, "msid");
+					msid = (char *)json_string_value(jmsid);
 					json_t *jmcast = json_object_get(m, "mcast");
 					mcast = (char *)json_string_value(jmcast);
 					json_t *jport = json_object_get(m, "port");
@@ -3444,7 +3464,7 @@ static json_t *janus_streaming_process_synchronous_request(janus_streaming_sessi
 					/* Create the data source stream */
 					janus_streaming_rtp_source_stream *stream = janus_streaming_create_rtp_source_stream(
 						name ? (char *)json_string_value(name) : NULL, g_list_length(streams),
-						mtype, mid, label ? label : mtype, mcast, miface, &iface,
+						mtype, mid, label ? label : mtype, msid, mcast, miface, &iface,
 						port, port2, port3, jrtcpport != NULL, rtcpport,
 						pt, codec, fmtp, doskew, bufferkf, simulcast, dosvc, textdata, buffermsg);
 					if(stream == NULL) {
@@ -3533,7 +3553,7 @@ static json_t *janus_streaming_process_synchronous_request(janus_streaming_sessi
 					/* Create the audio source stream */
 					janus_streaming_rtp_source_stream *stream = janus_streaming_create_rtp_source_stream(
 						name ? (char *)json_string_value(name) : NULL, g_list_length(streams),
-						"audio", "a", "audio",
+						"audio", "a", "audio", NULL,
 						amcast, amiface, &audio_iface,
 						aport, 0, 0, audiortcpport != NULL, artcpport,
 						apt, acodec, afmtp, doaskew, FALSE, FALSE, FALSE, FALSE, FALSE);
@@ -3619,7 +3639,7 @@ static json_t *janus_streaming_process_synchronous_request(janus_streaming_sessi
 					janus_streaming_rtp_source_stream *stream = janus_streaming_create_rtp_source_stream(
 						name ? (char *)json_string_value(name) : NULL,
 						g_list_length(streams),
-						"video", "v", "video",
+						"video", "v", "video", NULL,
 						vmcast, vmiface, &video_iface,
 						vport, vport2, vport3, videortcpport != NULL, vrtcpport,
 						vpt, vcodec, vfmtp, dovskew, bufferkf, simulcast, dosvc, FALSE, FALSE);
@@ -3691,7 +3711,7 @@ static json_t *janus_streaming_process_synchronous_request(janus_streaming_sessi
 					janus_streaming_rtp_source_stream *stream = janus_streaming_create_rtp_source_stream(
 						name ? (char *)json_string_value(name) : NULL,
 						g_list_length(streams),
-						"data", "d", "data",
+						"data", "d", "data", NULL,
 						dmcast, dmiface, &data_iface,
 						dport, 0, 0, FALSE, 0,
 						0, NULL, NULL, FALSE, FALSE, FALSE, FALSE, textdata, buffermsg);
@@ -4098,6 +4118,11 @@ static json_t *janus_streaming_process_synchronous_request(janus_streaming_sessi
 					janus_config_add(config, m, janus_config_item_create("type", janus_streaming_media_str(stream->type)));
 					janus_config_add(config, m, janus_config_item_create("mid", stream->mid));
 					janus_config_add(config, m, janus_config_item_create("label", stream->label));
+					if(stream->msid && stream->mstid) {
+						char msid[150];
+						g_snprintf(msid, sizeof(msid), "%s %s", stream->msid, stream->mstid);
+						janus_config_add(config, m, janus_config_item_create("msid", msid));
+					}
 					if(stream->port[0] > 0) {
 						g_snprintf(value, BUFSIZ, "%d", stream->port[0]);
 						janus_config_add(config, m, janus_config_item_create("port", value));
@@ -4216,6 +4241,11 @@ static json_t *janus_streaming_process_synchronous_request(janus_streaming_sessi
 					/* Return the new format */
 					json_object_set_new(info, "type", json_string(janus_streaming_media_str(stream->type)));
 					json_object_set_new(info, "mid", json_string(stream->mid));
+					if(stream->msid && stream->mstid) {
+						char msid[150];
+						g_snprintf(msid, sizeof(msid), "%s %s", stream->msid, stream->mstid);
+						json_object_set_new(info, "msid", json_string(msid));
+					}
 					if(stream->fd[0] != -1) {
 						if(stream->host)
 							json_object_set_new(ml, "host", json_string(stream->host));
@@ -4487,6 +4517,11 @@ static json_t *janus_streaming_process_synchronous_request(janus_streaming_sessi
 						janus_config_add(config, m, janus_config_item_create("type", janus_streaming_media_str(stream->type)));
 						janus_config_add(config, m, janus_config_item_create("mid", stream->mid));
 						janus_config_add(config, m, janus_config_item_create("label", stream->label));
+						if(stream->msid && stream->mstid) {
+							char msid[150];
+							g_snprintf(msid, sizeof(msid), "%s %s", stream->msid, stream->mstid);
+							janus_config_add(config, m, janus_config_item_create("msid", msid));
+						}
 						if(stream->port[0] > 0) {
 							g_snprintf(value, BUFSIZ, "%d", stream->port[0]);
 							janus_config_add(config, m, janus_config_item_create("port", value));
@@ -5747,12 +5782,12 @@ static void *janus_streaming_handler(void *data) {
 			if(session->mountpoint != NULL) {
 				if(session->mountpoint != mp) {
 					/* Already watching something else */
-					janus_refcount_decrease(&mp->ref);
 					JANUS_LOG(LOG_ERR, "Already watching mountpoint %s\n", session->mountpoint->id_str);
 					error_code = JANUS_STREAMING_ERROR_INVALID_STATE;
 					g_snprintf(error_cause, 512, "Already watching mountpoint %s", session->mountpoint->id_str);
 					janus_mutex_unlock(&session->mutex);
 					janus_mutex_unlock(&mp->mutex);
+					janus_refcount_decrease(&mp->ref);
 					goto error;
 				} else {
 					/* Make sure it's not an API error */
@@ -5785,11 +5820,11 @@ static void *janus_streaming_handler(void *data) {
 			}
 			/* New viewer: we send an offer ourselves */
 			JANUS_LOG(LOG_VERB, "Request to watch mountpoint/stream %s\n", id_value_str);
-			if(session->mountpoint != NULL || g_list_find(mp->viewers, session) != NULL) {
+			if(g_list_find(mp->viewers, session) != NULL) {
 				janus_mutex_unlock(&session->mutex);
 				janus_mutex_unlock(&mp->mutex);
 				janus_refcount_decrease(&mp->ref);
-				JANUS_LOG(LOG_ERR, "Already watching a stream...\n");
+				JANUS_LOG(LOG_ERR, "Already watching a stream (found %p in %s's viewers)...\n", session, id_value_str);
 				error_code = JANUS_STREAMING_ERROR_UNKNOWN_ERROR;
 				g_snprintf(error_cause, 512, "Already watching a stream");
 				goto error;
@@ -6014,11 +6049,13 @@ done:
 					janus_streaming_session_stream *s = (janus_streaming_session_stream *)temp->data;
 					janus_streaming_rtp_source_stream *stream = s->stream;
 					int pt = s->pt > 0 ? s->pt : stream->codecs.pt;
+					gboolean add_msid = (stream->msid && stream->mstid);
 					if(stream->type == JANUS_STREAMING_MEDIA_AUDIO && audio) {
 						/* Add audio line */
 						janus_sdp_generate_offer_mline(offer,
 							JANUS_SDP_OA_MLINE, JANUS_SDP_AUDIO,
 							JANUS_SDP_OA_MID, stream->mid,
+							JANUS_SDP_OA_MSID, add_msid ? stream->msid : NULL, add_msid ? stream->mstid : NULL,
 							JANUS_SDP_OA_PT, pt,
 							JANUS_SDP_OA_CODEC, janus_audiocodec_name(stream->codecs.audio_codec),
 							JANUS_SDP_OA_FMTP, stream->codecs.fmtp,
@@ -6030,6 +6067,7 @@ done:
 						janus_sdp_generate_offer_mline(offer,
 							JANUS_SDP_OA_MLINE, JANUS_SDP_VIDEO,
 							JANUS_SDP_OA_MID, stream->mid,
+							JANUS_SDP_OA_MSID, add_msid ? stream->msid : NULL, add_msid ? stream->mstid : NULL,
 							JANUS_SDP_OA_PT, pt,
 							JANUS_SDP_OA_CODEC, janus_videocodec_name(stream->codecs.video_codec),
 							JANUS_SDP_OA_FMTP, stream->codecs.fmtp,
@@ -6761,6 +6799,8 @@ static void janus_streaming_rtp_source_stream_free(const janus_refcount *st_ref)
 	g_free(stream->codecs.fmtp);
 	g_free(stream->mid);
 	g_free(stream->label);
+	g_free(stream->msid);
+	g_free(stream->mstid);
 	g_free(stream->mcast_str);
 	g_free(stream->iface_str);
 	g_free(stream);
@@ -6789,6 +6829,7 @@ static void janus_streaming_rtp_source_free(janus_streaming_rtp_source *source) 
 			JANUS_LOG(LOG_ERR, "Couldn't send TEARDOWN request: %s\n", curl_easy_strerror(res));
 		}
 		curl_easy_cleanup(source->curl);
+		g_free(source->curl_errbuf);
 	}
 	janus_streaming_buffer *curldata = source->curldata;
 	if(curldata != NULL) {
@@ -6819,7 +6860,7 @@ static void janus_streaming_file_source_free(janus_streaming_file_source *source
 /* Helper to create an RTP live source (e.g., from gstreamer/ffmpeg/vlc/etc.) */
 /* Helpers to create an RTP live source (e.g., from gstreamer/ffmpeg/vlc/etc.) */
 janus_streaming_rtp_source_stream *janus_streaming_create_rtp_source_stream(
-		const char *name, int mindex, const char *type, const char *mid, const char *label,
+		const char *name, int mindex, const char *type, const char *mid, const char *label, const char *msid,
 		char *mcast, char *miface, const janus_network_address *iface,
 		uint16_t port, uint16_t port2, uint16_t port3, gboolean dortcp, uint16_t rtcpport,
 		uint8_t pt, char *codec, char *fmtp,
@@ -6904,6 +6945,17 @@ janus_streaming_rtp_source_stream *janus_streaming_create_rtp_source_stream(
 	stream->type = mtype;
 	stream->mid = g_strdup(mid);
 	stream->label = g_strdup(label);
+	if(msid) {
+		char s_msid[65], s_mstid[65];
+		s_msid[0] = '\0';
+		s_mstid[0] = '\0';
+		if(sscanf(msid, "%64s %64s", s_msid, s_mstid) != 2) {
+			JANUS_LOG(LOG_WARN, "[%s] Invalid msid for stream, ignoring\n", name);
+		} else {
+			stream->msid = g_strdup(s_msid);
+			stream->mstid = g_strdup(s_mstid);
+		}
+	}
 	stream->codecs.pt = (mtype != JANUS_STREAMING_MEDIA_DATA ? pt : -1);
 	stream->codecs.fmtp = fmtp ? g_strdup(fmtp) : NULL;
 	stream->codecs.audio_codec = JANUS_AUDIOCODEC_NONE;
@@ -7396,6 +7448,9 @@ static int janus_streaming_rtsp_connect_to_server(janus_streaming_mountpoint *mp
 	curl_easy_setopt(curl, CURLOPT_REDIR_PROTOCOLS, CURLPROTO_RTSP);
 	curl_easy_setopt(curl, CURLOPT_HTTP09_ALLOWED, 1L);
 #endif
+	char *curl_errbuf = g_malloc(CURL_ERROR_SIZE);
+	*curl_errbuf = '\0';
+	curl_easy_setopt(curl, CURLOPT_ERRORBUFFER, curl_errbuf);
 	/* Any authentication to take into account? */
 	if(source->rtsp_username && source->rtsp_password) {
 		/* Point out that digest authentication is only available is libcurl >= 7.45.0 */
@@ -7418,8 +7473,10 @@ static int janus_streaming_rtsp_connect_to_server(janus_streaming_mountpoint *mp
 	curl_easy_setopt(curl, CURLOPT_HEADERDATA, curldata);
 	int res = curl_easy_perform(curl);
 	if(res != CURLE_OK) {
-		JANUS_LOG(LOG_ERR, "Couldn't send DESCRIBE request: %s\n", curl_easy_strerror(res));
+		JANUS_LOG(LOG_ERR, "Couldn't send DESCRIBE request: %s (%s)\n",
+			curl_easy_strerror(res), curl_errbuf);
 		curl_easy_cleanup(curl);
+		g_free(curl_errbuf);
 		g_free(curldata->buffer);
 		g_free(curldata);
 		return -2;
@@ -7431,13 +7488,15 @@ static int janus_streaming_rtsp_connect_to_server(janus_streaming_mountpoint *mp
 		/* Possibly a quirk in the RTSP server, where the DESCRIBE request expects a path only. */
 		CURLU *curl_u = curl_url();
 		char *path = NULL;
-		if(!(curl_url_set(curl_u, CURLUPART_URL, source->rtsp_url, 0))) {
+		if(curl_u && !(curl_url_set(curl_u, CURLUPART_URL, source->rtsp_url, 0))) {
 			if(!(curl_url_get(curl_u, CURLUPART_PATH, &path, 0))) {
 				curl_easy_setopt(curl, CURLOPT_RTSP_STREAM_URI, path);
-				curl_easy_perform(curl);
-				res = curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &code);
-				if((res == CURLE_OK) && (code != 404)) {
-					source->rtsp_stream_uri = g_strdup(path);
+				res = curl_easy_perform(curl);
+				if(res == CURLE_OK) {
+					res = curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &code);
+					if((res == CURLE_OK) && (code != 404)) {
+						source->rtsp_stream_uri = g_strdup(path);
+					}
 				}
 				curl_free(path);
 			}
@@ -7446,14 +7505,17 @@ static int janus_streaming_rtsp_connect_to_server(janus_streaming_mountpoint *mp
 	}
 #endif
 	if(res != CURLE_OK) {
-		JANUS_LOG(LOG_ERR, "Couldn't get DESCRIBE answer: %s\n", curl_easy_strerror(res));
+		JANUS_LOG(LOG_ERR, "Couldn't get DESCRIBE answer: %s (%s)\n",
+			curl_easy_strerror(res), curl_errbuf);
 		curl_easy_cleanup(curl);
+		g_free(curl_errbuf);
 		g_free(curldata->buffer);
 		g_free(curldata);
 		return -3;
 	} else if(code != 200) {
 		JANUS_LOG(LOG_ERR, "Couldn't get DESCRIBE code: %ld\n", code);
 		curl_easy_cleanup(curl);
+		g_free(curl_errbuf);
 		g_free(curldata->buffer);
 		g_free(curldata);
 		return -4;
@@ -7493,6 +7555,7 @@ static int janus_streaming_rtsp_connect_to_server(janus_streaming_mountpoint *mp
 		if(g_atomic_int_get(&mp->destroyed)) {
 			JANUS_LOG(LOG_WARN, "[%s] Destroying mountpoint while trying to reconnect, aborting\n", mp->name);
 			curl_easy_cleanup(curl);
+			g_free(curl_errbuf);
 			g_free(curldata->buffer);
 			g_free(curldata);
 			return -8;
@@ -7519,6 +7582,7 @@ static int janus_streaming_rtsp_connect_to_server(janus_streaming_mountpoint *mp
 	if(vresult == -1 && aresult == -1) {
 		/* Both audio and video failed? Give up... */
 		curl_easy_cleanup(curl);
+		g_free(curl_errbuf);
 		g_free(curldata->buffer);
 		g_free(curldata);
 		return -7;
@@ -7557,9 +7621,11 @@ static int janus_streaming_rtsp_connect_to_server(janus_streaming_mountpoint *mp
 		curl_easy_setopt(curl, CURLOPT_RTSP_REQUEST, (long)CURL_RTSPREQ_SETUP);
 		res = curl_easy_perform(curl);
 		if(res != CURLE_OK) {
-			JANUS_LOG(LOG_ERR, "Couldn't send SETUP request: %s\n", curl_easy_strerror(res));
+			JANUS_LOG(LOG_ERR, "Couldn't send SETUP request: %s (%s)\n",
+				curl_easy_strerror(res), curl_errbuf);
 			g_strfreev(parts);
 			curl_easy_cleanup(curl);
+			g_free(curl_errbuf);
 			g_free(curldata->buffer);
 			g_free(curldata);
 			if(video_fds.fd != -1) close(video_fds.fd);
@@ -7567,10 +7633,13 @@ static int janus_streaming_rtsp_connect_to_server(janus_streaming_mountpoint *mp
 			if(audio_fds.fd != -1) close(audio_fds.fd);
 			if(audio_fds.rtcp_fd != -1) close(audio_fds.rtcp_fd);
 			return -5;
-		} else if(code != 200) {
-			JANUS_LOG(LOG_ERR, "Couldn't get SETUP code: %ld\n", code);
+		}
+		res = curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &code);
+		if(code != 200) {
+			JANUS_LOG(LOG_ERR, "Couldn't SETUP, got error code: %ld\n", code);
 			g_strfreev(parts);
 			curl_easy_cleanup(curl);
+			g_free(curl_errbuf);
 			g_free(curldata->buffer);
 			g_free(curldata);
 			if(video_fds.fd != -1) close(video_fds.fd);
@@ -7596,7 +7665,7 @@ static int janus_streaming_rtsp_connect_to_server(janus_streaming_mountpoint *mp
 					index++;
 					continue;
 				}
-				if(strlen(line) < 3) {
+				if(strnlen(line, 3) < 3) {
 					JANUS_LOG(LOG_ERR, "Invalid RTSP line (%zu bytes): %s\n", strlen(line), line);
 					success = FALSE;
 					break;
@@ -7732,9 +7801,11 @@ static int janus_streaming_rtsp_connect_to_server(janus_streaming_mountpoint *mp
 		curl_easy_setopt(curl, CURLOPT_RTSP_REQUEST, (long)CURL_RTSPREQ_SETUP);
 		res = curl_easy_perform(curl);
 		if(res != CURLE_OK) {
-			JANUS_LOG(LOG_ERR, "Couldn't send SETUP request: %s\n", curl_easy_strerror(res));
+			JANUS_LOG(LOG_ERR, "Couldn't send SETUP request: %s (%s)\n",
+				curl_easy_strerror(res), curl_errbuf);
 			g_strfreev(parts);
 			curl_easy_cleanup(curl);
+			g_free(curl_errbuf);
 			g_free(curldata->buffer);
 			g_free(curldata);
 			if(video_fds.fd != -1) close(video_fds.fd);
@@ -7742,10 +7813,13 @@ static int janus_streaming_rtsp_connect_to_server(janus_streaming_mountpoint *mp
 			if(audio_fds.fd != -1) close(audio_fds.fd);
 			if(audio_fds.rtcp_fd != -1) close(audio_fds.rtcp_fd);
 			return -6;
-		} else if(code != 200) {
-			JANUS_LOG(LOG_ERR, "Couldn't get SETUP code: %ld\n", code);
+		}
+		res = curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &code);
+		if(code != 200) {
+			JANUS_LOG(LOG_ERR, "Couldn't SETUP, got error code: %ld\n", code);
 			g_strfreev(parts);
 			curl_easy_cleanup(curl);
+			g_free(curl_errbuf);
 			g_free(curldata->buffer);
 			g_free(curldata);
 			if(video_fds.fd != -1) close(video_fds.fd);
@@ -7771,7 +7845,7 @@ static int janus_streaming_rtsp_connect_to_server(janus_streaming_mountpoint *mp
 					index++;
 					continue;
 				}
-				if(strlen(line) < 3) {
+				if(strnlen(line, 3) < 3) {
 					JANUS_LOG(LOG_ERR, "Invalid RTSP line (%zu bytes): %s\n", strlen(line), line);
 					success = FALSE;
 					break;
@@ -7965,6 +8039,7 @@ static int janus_streaming_rtsp_connect_to_server(janus_streaming_mountpoint *mp
 		temp = temp->next;
 	}
 	source->curl = curl;
+	source->curl_errbuf = curl_errbuf;
 	source->curldata = curldata;
 	return 0;
 }
@@ -8046,7 +8121,15 @@ static int janus_streaming_rtsp_play(janus_streaming_rtp_source *source) {
 	curl_easy_setopt(source->curl, CURLOPT_RTSP_REQUEST, (long)CURL_RTSPREQ_PLAY);
 	int res = curl_easy_perform(source->curl);
 	if(res != CURLE_OK) {
-		JANUS_LOG(LOG_ERR, "Couldn't send PLAY request: %s\n", curl_easy_strerror(res));
+		JANUS_LOG(LOG_ERR, "Couldn't send PLAY request: %s (%s)\n",
+			curl_easy_strerror(res), source->curl_errbuf);
+		janus_mutex_unlock(&source->rtsp_mutex);
+		return -1;
+	}
+	long code = 0;
+	res = curl_easy_getinfo(source->curl, CURLINFO_RESPONSE_CODE, &code);
+	if(code != 200) {
+		JANUS_LOG(LOG_ERR, "Couldn't PLAY, got error code: %ld\n", code);
 		janus_mutex_unlock(&source->rtsp_mutex);
 		return -1;
 	}
@@ -8683,6 +8766,8 @@ static void *janus_streaming_relay_thread(void *data) {
 				/* Let's clean up the source first */
 				curl_easy_cleanup(source->curl);
 				source->curl = NULL;
+				g_free(source->curl_errbuf);
+				source->curl_errbuf = NULL;
 				if(source->curldata)
 					g_free(source->curldata->buffer);
 				g_free(source->curldata);
@@ -8731,7 +8816,8 @@ static void *janus_streaming_relay_thread(void *data) {
 				curl_easy_setopt(source->curl, CURLOPT_RTSP_REQUEST, (long)CURL_RTSPREQ_OPTIONS);
 				resfd = curl_easy_perform(source->curl);
 				if(resfd != CURLE_OK) {
-					JANUS_LOG(LOG_ERR, "[%s] Couldn't send OPTIONS request: %s\n", name, curl_easy_strerror(resfd));
+					JANUS_LOG(LOG_ERR, "[%s] Couldn't send OPTIONS request: %s (%s)\n",
+						name, curl_easy_strerror(resfd), source->curl_errbuf);
 				}
 				janus_mutex_unlock(&source->rtsp_mutex);
 			}
@@ -9230,6 +9316,25 @@ static void *janus_streaming_relay_thread(void *data) {
 		}
 	}
 
+	/* Close the ports we bound to */
+	temp = source->media;
+	while(temp) {
+		janus_streaming_rtp_source_stream *stream = (janus_streaming_rtp_source_stream *)temp->data;
+		if(stream->fd[0] > -1)
+			close(stream->fd[0]);
+		stream->fd[0] = -1;
+		if(stream->fd[1] > -1)
+			close(stream->fd[1]);
+		stream->fd[1] = -1;
+		if(stream->fd[2] > -1)
+			close(stream->fd[2]);
+		stream->fd[2] = -1;
+		if(stream->rtcp_fd > -1)
+			close(stream->rtcp_fd);
+		stream->rtcp_fd = -1;
+		temp = temp->next;
+	}
+
 	/* Notify users this mountpoint is done */
 	janus_mutex_lock(&mountpoint->mutex);
 	GList *viewer = g_list_first(mountpoint->viewers);
@@ -9481,7 +9586,7 @@ static void janus_streaming_relay_rtp_packet(gpointer data, gpointer user_data) 
 					return;
 				/* Process this packet: don't relay if it's not the SSRC/layer we wanted to handle */
 				gboolean relay = janus_rtp_simulcasting_context_process_rtp(&s->sim_context,
-					(char *)packet->data, packet->length, packet->ssrc, NULL, packet->codec, &s->context);
+					(char *)packet->data, packet->length, packet->ssrc, NULL, packet->codec, &s->context, NULL);
 				if(!relay) {
 					/* Did a lot of time pass before we could relay a packet? */
 					gint64 now = janus_get_monotonic_time();
@@ -9653,6 +9758,9 @@ static void janus_streaming_helper_rtprtcp_packet(gpointer data, gpointer user_d
 	copy->ssrc[2] = packet->ssrc[2];
 	copy->codec = packet->codec;
 	copy->substream = packet->substream;
+	copy->svc = packet->svc;
+	if(copy->svc)
+		copy->svc_info = packet->svc_info;
 	copy->ptype = packet->ptype;
 	copy->timestamp = packet->timestamp;
 	copy->seq_number = packet->seq_number;

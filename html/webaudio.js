@@ -149,17 +149,6 @@ $(document).ready(function() {
 									// Now that we're aware of the remote stream, we process it to visualize it
 									if(!on) {
 										// Track removed, get rid of the stream and the rendering
-										var stream = remoteTracks[mid];
-										if(stream) {
-											try {
-												var tracks = stream.getTracks();
-												for(var i in tracks) {
-													var mst = tracks[i];
-													if(mst)
-														mst.stop();
-												}
-											} catch(e) {}
-										}
 										$('#peeraudio' + mid).remove();
 										delete remoteTracks[mid];
 										return;
@@ -167,8 +156,7 @@ $(document).ready(function() {
 									// If we're here, a new track was added
 									if(track.kind === "audio") {
 										// New audio track: create a stream out of it, and use a hidden <audio> element
-										stream = new MediaStream();
-										stream.addTrack(track.clone());
+										stream = new MediaStream([track]);
 										remoteTracks[mid] = stream;
 										Janus.log("Created remote audio stream:", stream);
 										if($('#peeraudio'+mid).length === 0)
@@ -318,7 +306,9 @@ function setupWebAudioDemo() {
 		echotest.createOffer(
 			{
 				// We provide our own stream
-				stream: peer.stream,
+				tracks: [
+					{ type: 'audio', capture: peer.stream.getAudioTracks()[0], recv: true }
+				],
 				success: function(jsep) {
 					Janus.debug("Got SDP!", jsep);
 					var body = { audio: true, video: true };

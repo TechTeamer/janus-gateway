@@ -25,6 +25,7 @@ var acodec = (getQueryStringValue("acodec") !== "" ? getQueryStringValue("acodec
 var vcodec = (getQueryStringValue("vcodec") !== "" ? getQueryStringValue("vcodec") : null);
 var doDtx = (getQueryStringValue("dtx") === "yes" || getQueryStringValue("dtx") === "true");
 var subscriber_mode = (getQueryStringValue("subscriber-mode") === "yes" || getQueryStringValue("subscriber-mode") === "true");
+var use_msid = (getQueryStringValue("msid") === "yes" || getQueryStringValue("msid") === "true");
 
 $(document).ready(function() {
 	// Initialize the library (all console debuggers enabled)
@@ -147,6 +148,7 @@ $(document).ready(function() {
 														continue;
 													var id = list[f]["id"];
 													var streams = list[f]["streams"];
+													var display = list[f]["display"];
 													for(var i in streams) {
 														var stream = streams[i];
 														stream["id"] = id;
@@ -338,8 +340,7 @@ $(document).ready(function() {
 										// New video track: create a stream out of it
 										localVideos++;
 										$('#videolocal .no-video-container').remove();
-										stream = new MediaStream();
-										stream.addTrack(track.clone());
+										stream = new MediaStream([track]);
 										localTracks[trackId] = stream;
 										Janus.log("Created local stream:", stream);
 										Janus.log(stream.getTracks());
@@ -440,14 +441,18 @@ function registerUsername() {
 function publishOwnFeed(useAudio) {
 	// Publish our stream
 	$('#publish').attr('disabled', true).unbind('click');
+
+	// We want sendonly audio and video (uncomment the data track
+	// too if you want to publish via datachannels as well)
+	let tracks = [];
+	if(useAudio)
+		tracks.push({ type: 'audio', capture: true, recv: false });
+	tracks.push({ type: 'video', capture: true, recv: false, simulcast: doSimulcast });
+	//~ tracks.push({ type: 'data' });
+
 	sfutest.createOffer(
 		{
-			// Add data:true here if you want to publish datachannels as well
-			media: { audioRecv: false, videoRecv: false, audioSend: useAudio, videoSend: true },	// Publishers are sendonly
-			// If you want to test simulcasting (Chrome and Firefox only), then
-			// pass a ?simulcast=true when opening this demo page: it will turn
-			// the following 'simulcast' property to pass to janus.js to true
-			simulcast: doSimulcast,
+			tracks: tracks,
 			customizeSdp: function(jsep) {
 				// If DTX is enabled, munge the SDP
 				if(doDtx) {
@@ -547,6 +552,7 @@ function newRemoteFeed(id, display, streams) {
 					room: myroom,
 					ptype: "subscriber",
 					streams: subscription,
+					use_msid: use_msid,
 					private_id: mypvtid
 				};
 				remoteFeed.send({ message: subscribe });
@@ -613,9 +619,13 @@ function newRemoteFeed(id, display, streams) {
 					remoteFeed.createAnswer(
 						{
 							jsep: jsep,
-							// Add data:true here if you want to subscribe to datachannels as well
-							// (obviously only works if the publisher offered them in the first place)
-							media: { audioSend: false, videoSend: false },	// We want recvonly audio/video
+							// We only specify data channels here, as this way in
+							// case they were offered we'll enable them. Since we
+							// don't mention audio or video tracks, we autoaccept them
+							// as recvonly (since we won't capture anything ourselves)
+							tracks: [
+								{ type: 'data' }
+							],
 							customizeSdp: function(jsep) {
 								if(stereo && jsep.sdp.indexOf("stereo=1") == -1) {
 									// Make sure that our offer contains stereo too
@@ -641,17 +651,6 @@ function newRemoteFeed(id, display, streams) {
 				Janus.debug("Remote feed #" + remoteFeed.rfindex + ", remote track (mid=" + mid + ") " + (on ? "added" : "removed") + ":", track);
 				if(!on) {
 					// Track removed, get rid of the stream and the rendering
-					var stream = remoteFeed.remoteTracks[mid];
-					if(stream) {
-						try {
-							var tracks = stream.getTracks();
-							for(var i in tracks) {
-								var mst = tracks[i];
-								if(mst !== null && mst !== undefined)
-									mst.stop();
-							}
-						} catch(e) {}
-					}
 					$('#remotevideo'+remoteFeed.rfindex + '-' + mid).remove();
 					if(track.kind === "video") {
 						remoteFeed.remoteVideos--;
@@ -678,8 +677,7 @@ function newRemoteFeed(id, display, streams) {
 					return;
 				if(track.kind === "audio") {
 					// New audio track: create a stream out of it, and use a hidden <audio> element
-					stream = new MediaStream();
-					stream.addTrack(track.clone());
+					stream = new MediaStream([track]);
 					remoteFeed.remoteTracks[mid] = stream;
 					Janus.log("Created remote audio stream:", stream);
 					$('#videoremote'+remoteFeed.rfindex).append('<audio class="hide" id="remotevideo' + remoteFeed.rfindex + '-' + mid + '" autoplay playsinline/>');
@@ -698,8 +696,7 @@ function newRemoteFeed(id, display, streams) {
 					// New video track: create a stream out of it
 					remoteFeed.remoteVideos++;
 					$('#videoremote'+remoteFeed.rfindex + ' .no-video-container').remove();
-					stream = new MediaStream();
-					stream.addTrack(track.clone());
+					stream = new MediaStream([track]);
 					remoteFeed.remoteTracks[mid] = stream;
 					Janus.log("Created remote video stream:", stream);
 					$('#videoremote'+remoteFeed.rfindex).append('<video class="rounded centered" id="remotevideo' + remoteFeed.rfindex + '-' + mid + '" width=100% autoplay playsinline/>');

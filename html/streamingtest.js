@@ -126,8 +126,13 @@ $(document).ready(function() {
 										streaming.createAnswer(
 											{
 												jsep: jsep,
-												// We want recvonly audio/video and, if negotiated, datachannels
-												media: { audioSend: false, videoSend: false, data: true },
+												// We only specify data channels here, as this way in
+												// case they were offered we'll enable them. Since we
+												// don't mention audio or video tracks, we autoaccept them
+												// as recvonly (since we won't capture anything ourselves)
+												tracks: [
+													{ type: 'data' }
+												],
 												customizeSdp: function(jsep) {
 													if(stereo && jsep.sdp.indexOf("stereo=1") == -1) {
 														// Make sure that our offer contains stereo too
@@ -154,17 +159,6 @@ $(document).ready(function() {
 										mstreamId = "mstream0";
 									if(!on) {
 										// Track removed, get rid of the stream and the rendering
-										var stream = remoteTracks[mid];
-										if(stream) {
-											try {
-												var tracks = stream.getTracks();
-												for(var i in tracks) {
-													var mst = tracks[i];
-													if(mst)
-														mst.stop();
-												}
-											} catch(e) {}
-										}
 										$('#remotevideo' + mid).remove();
 										if(track.kind === "video") {
 											remoteVideos--;
@@ -182,12 +176,13 @@ $(document).ready(function() {
 										delete remoteTracks[mid];
 										return;
 									}
+									if($('#remotevideo' + mid).length > 0)
+										return;
 									// If we're here, a new track was added
 									var stream = null;
 									if(track.kind === "audio") {
 										// New audio track: create a stream out of it, and use a hidden <audio> element
-										stream = new MediaStream();
-										stream.addTrack(track.clone());
+										stream = new MediaStream([track]);
 										remoteTracks[mid] = stream;
 										Janus.log("Created remote audio stream:", stream);
 										$('#'+mstreamId).append('<audio class="hide" id="remotevideo' + mid + '" playsinline/>');
@@ -206,8 +201,7 @@ $(document).ready(function() {
 										// New video track: create a stream out of it
 										remoteVideos++;
 										$('.no-video-container').remove();
-										stream = new MediaStream();
-										stream.addTrack(track.clone());
+										stream = new MediaStream([track]);
 										remoteTracks[mid] = stream;
 										Janus.log("Created remote video stream:", stream);
 										$('#'+mstreamId).append('<video class="rounded centered hide" id="remotevideo' + mid + '" width="100%" height="100%" playsinline/>');
@@ -360,6 +354,7 @@ function updateStreamsList() {
 			$('#streamslist a').unbind('click').click(function() {
 				selectedStream = $(this).attr("id");
 				$('#streamset').html($(this).html()).parent().removeClass('open');
+				$('#list .dropdown-backdrop').remove();
 				return false;
 
 			});
