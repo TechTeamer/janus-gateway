@@ -1,0 +1,25 @@
+os: linux
+dist: jammy
+
+language: c
+
+git:
+  depth: false
+
+env:
+  global:
+    - NODE_ENV=dev
+    - PATH=$HOME/.yarn/bin:$PATH
+
+cache: false
+
+notifications:
+  slack: $SLACK_ROOM
+  email: false
+
+before_install:
+  - sudo apt-get update -qq
+  - sudo apt-get install -y libmicrohttpd-dev libjansson-dev libssl-dev libsrtp2-dev libsofia-sip-ua-dev libglib2.0-dev
+  - sudo apt-get install -y gengetopt libtool automake pkg-config
+
+script: ./test/travis.sh
