@@ -1,25 +1,62 @@
 os: linux
-dist: jammy
 
-language: c
-
-git:
-  depth: false
+services:
+  - docker
 
 env:
   global:
-    - NODE_ENV=dev
-    - PATH=$HOME/.yarn/bin:$PATH
-
-cache: false
-
-notifications:
-  slack: $SLACK_ROOM
-  email: false
+    - JANUS_REPOSITORY="your_janus_repository"
+    - JANUS_VERSION_COMMIT="your_commit_hash"
+    - UID=1000
+    - GID=1000
+    - DOCKER_USER="techteamer"
 
 before_install:
-  - sudo apt-get update -qq
-  - sudo apt-get install -y libmicrohttpd-dev libjansson-dev libssl-dev libsrtp2-dev libsofia-sip-ua-dev libglib2.0-dev
-  - sudo apt-get install -y gengetopt libtool automake pkg-config
+  - docker pull registry.access.redhat.com/ubi9/ubi-minimal
 
-script: ./test/travis.sh
+install:
+  # Lépés 1: JANUS COMPILE STAGE
+  - docker run -d --name janus_compile -v $(pwd):/workspace -v $(pwd)/install:/install registry.access.redhat.com/ubi9/ubi-minimal sleep infinity
+  - docker exec janus_compile cp /install/dnf/dnf.conf /etc/dnf/
+  - docker exec janus_compile cp /install/yum/CentOS.repo /etc/yum.repos.d/
+  - docker exec janus_compile cp /install/yum/RPM-GPG-KEY-centosofficial /etc/pki/rpm-gpg/
+  - docker exec janus_compile rpm -Uvh https://dl.fedoraproject.org/pub/epel/epel-release-latest-9.noarch.rpm
+  - docker exec janus_compile rpm -Uvh https://mirrors.rpmfusion.org/free/el/rpmfusion-free-release-9.noarch.rpm
+  - docker exec janus_compile microdnf -y clean all
+  - docker exec janus_compile rpm -e --nodeps openssl-fips-provider
+  - docker exec janus_compile microdnf -y update
+  - docker exec janus_compile microdnf -y install ffmpeg-devel libogg-devel jansson-devel openssl-devel glib2-devel pkgconf gengetopt gnutls-devel libtool automake cmake make libcurl-devel libconfig-devel wget unzip gtk-doc
+
+  # Lépés 2: Telepítési függőségek
+  - docker exec janus_compile mkdir -p /workspace
+
+  # Install libnice
+  - docker exec janus_compile bash -c "cd /workspace && wget -q -O libnice-0.1.17.tar.gz https://github.com/libnice/libnice/archive/refs/tags/0.1.17.tar.gz && tar xzf libnice-0.1.17.tar.gz && rm libnice-0.1.17.tar.gz && cd libnice-0.1.17 && ./autogen.sh && ./configure && make && make install"
+
+  # Install libsrtp
+  - docker exec janus_compile bash -c "cd /workspace && wget -q https://github.com/cisco/libsrtp/archive/v2.5.0.tar.gz && tar xzf v2.5.0.tar.gz && rm v2.5.0.tar.gz && cd libsrtp-2.5.0 && ./configure --prefix=/usr/local --enable-openssl && make shared_library && make install"
+
+  # Install libwebsockets
+  - docker exec janus_compile bash -c "cd /workspace && wget -q https://github.com/warmcat/libwebsockets/archive/v4.3.2.tar.gz && tar xzf v4.3.2.tar.gz && rm v4.3.2.tar.gz && cd libwebsockets-4.3.2 && mkdir build && cd build && cmake -DLWS_MAX_SMP=1 -DLWS_WITHOUT_TEST_SERVER=1 -DLWS_WITHOUT_TESTAPPS=1 -DLWS_WITHOUT_CLIENT=1 -DCMAKE_INSTALL_PREFIX:PATH=/usr/local -DCMAKE_C_FLAGS=\"-fpic\" .. && make && make install"
+
+  # Build Janus Gateway
+  - docker exec janus_compile bash -c "cd /workspace/janus-gateway-$JANUS_VERSION_COMMIT && sh autogen.sh"
+  - docker exec janus_compile bash -c "cd /workspace/janus-gateway-$JANUS_VERSION_COMMIT && ./configure --enable-post-processing --disable-data-channels --disable-all-plugins --enable-plugin-echotest --enable-plugin-videoroom --disable-all-transports --enable-websockets"
+  - docker exec janus_compile bash -c "cd /workspace/janus-gateway-$JANUS_VERSION_COMMIT && make && make install"
+
+  # Lépés 3: BUILD STAGE
+  - docker run -d --name build_janus -v $(pwd):/workspace -v $(pwd)/install:/install registry.access.redhat.com/ubi9/ubi-minimal sleep infinity
+  - docker exec build_janus sh -x /install/install-os.sh
+  - docker exec build_janus groupadd -g $GID $DOCKER_USER && useradd -m -u $UID -g $DOCKER_USER $DOCKER_USER
+  - docker exec build_janus sh -x /install/install-supervisor.sh $DOCKER_USER
+  - docker exec build_janus sh -x /install/install-janus-runtime-env.sh
+  - docker exec build_janus bash -c "ln -s /usr/local/lib/libsrtp2.so.1 /usr/local/lib/libsrtp2.so"
+  - docker exec build_janus bash -c "ln -s /usr/local/lib/libnice.so.10.10.0 /usr/local/lib/libnice.so.10 && ln -s /usr/local/lib/libnice.so.10.10.0 /usr/local/lib/libnice.so"
+  - docker exec build_janus bash -c "ln -s /usr/local/lib/libwebsockets.so.19 /usr/local/lib/libwebsockets.so"
+
+script:
+  - docker exec build_janus bash -c "cd /workspace/test && ./check_janus.sh"
+
+after_script:
+  - docker stop janus_compile
+  - docker stop build_janus
