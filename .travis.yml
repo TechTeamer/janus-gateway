@@ -5,8 +5,8 @@ services:
 
 env:
   global:
-    - JANUS_VERSION_COMMIT="bad60d7032026af453a98ed7aba7fbc083385ea2"
-    - UID=1000
+    - JANUS_VERSION_COMMIT="19c5ee80972a9c2aea8f8611df4b35eef4e9598e"
+    - USER_ID=1000
     - GID=1000
     - DOCKER_USER="techteamer"
 
@@ -15,7 +15,7 @@ before_install:
 
 install:
   # Fázis 1: JANUS COMPILE STAGE
-  - docker run -d --name janus_compile -v $(pwd):/workspace registry.access.redhat.com/ubi9/ubi-minimal sleep infinity
+	- docker run -d --privileged --name janus_compile -v $(pwd):/workspace registry.access.redhat.com/ubi9/ubi-minimal sleep infinity
   - docker exec janus_compile bash -c "microdnf -y update && microdnf -y install dnf wget tar gcc-c++ make automake cmake libtool pkgconf"
   - docker exec janus_compile cp /workspace/test/install/dnf/dnf.conf /etc/dnf/
   - docker exec janus_compile cp /workspace/test/install/yum/CentOS.repo /etc/yum.repos.d/
@@ -45,7 +45,7 @@ script:
   - docker exec build_janus cp /workspace/test/install/install-supervisor.sh /install/install-supervisor.sh
   - docker exec build_janus cp /workspace/test/install/install-janus-runtime-env.sh /install/install-janus-runtime-env.sh
   - docker exec build_janus sh -x /install/install-os.sh
-  - docker exec build_janus bash -c "groupadd -g $GID $DOCKER_USER && useradd -m -u $UID -g $DOCKER_USER $DOCKER_USER"
+  - docker exec build_janus bash -c "groupadd -g $GID $DOCKER_USER && useradd -m -u $USER_ID -g $DOCKER_USER $DOCKER_USER"
   - docker exec build_janus sh -x /install/install-supervisor.sh $DOCKER_USER
   - docker exec build_janus sh -x /install/install-janus-runtime-env.sh
   - docker exec build_janus bash -c "[ ! -e /usr/local/lib/libsrtp2.so ] && ln -s /usr/local/lib/libsrtp2.so.1 /usr/local/lib/libsrtp2.so || echo 'Link already exists'"
