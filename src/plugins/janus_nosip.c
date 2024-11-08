@@ -264,6 +264,7 @@ static gboolean ipv6_disabled = FALSE;
 static janus_callbacks *gateway = NULL;
 
 static char *local_ip = NULL, *sdp_ip = NULL;
+static janus_network_address janus_network_local_ip = { 0 };
 #define DEFAULT_RTP_RANGE_MIN 10000
 #define DEFAULT_RTP_RANGE_MAX 60000
 static uint16_t rtp_range_min = DEFAULT_RTP_RANGE_MIN;
@@ -289,10 +290,10 @@ static janus_nosip_message exit_message;
 typedef struct janus_nosip_media {
 	char *remote_audio_ip;
 	char *remote_video_ip;
-	int ready:1;
+	gboolean ready;
 	gboolean require_srtp, has_srtp_local, has_srtp_remote;
 	janus_srtp_profile srtp_profile;
-	int has_audio:1;
+	gboolean has_audio;
 	int audio_rtp_fd, audio_rtcp_fd;
 	int local_audio_rtp_port, remote_audio_rtp_port;
 	int local_audio_rtcp_port, remote_audio_rtcp_port;
@@ -304,7 +305,7 @@ typedef struct janus_nosip_media {
 	srtp_policy_t audio_remote_policy, audio_local_policy;
 	char *audio_srtp_local_profile, *audio_srtp_local_crypto;
 	gboolean audio_send;
-	int has_video:1;
+	gboolean has_video;
 	int video_rtp_fd, video_rtcp_fd;
 	int local_video_rtp_port, remote_video_rtp_port;
 	int local_video_rtcp_port, remote_video_rtcp_port;
@@ -621,12 +622,12 @@ void janus_nosip_media_reset(janus_nosip_session *session) {
 	session->media.updated = FALSE;
 	session->media.ready = FALSE;
 	session->media.require_srtp = FALSE;
-	session->media.has_audio = 0;
+	session->media.has_audio = FALSE;
 	session->media.audio_pt = -1;
 	session->media.opusred_pt = -1;
 	session->media.audio_pt_name = NULL;	/* Immutable string, no need to free*/
 	session->media.audio_send = TRUE;
-	session->media.has_video = 0;
+	session->media.has_video = FALSE;
 	session->media.video_pt = -1;
 	session->media.video_pt_name = NULL;	/* Immutable string, no need to free*/
 	session->media.video_send = TRUE;
@@ -688,7 +689,7 @@ int janus_nosip_init(janus_callbacks *callback, const char *config_path) {
 
 		janus_config_category *config_general = janus_config_get_create(config, NULL, janus_config_type_category, "general");
 		janus_config_item *item = janus_config_get(config, config_general, janus_config_type_item, "local_ip");
-		if(item && item->value) {
+		if(item && item->value && strlen(item->value) > 0) {
 			/* Verify that the address is valid */
 			struct ifaddrs *ifas = NULL;
 			janus_network_address iface;
@@ -711,9 +712,30 @@ int janus_nosip_init(janus_callbacks *callback, const char *config_path) {
 		}
 
 		item = janus_config_get(config, config_general, janus_config_type_item, "sdp_ip");
-		if(item && item->value) {
+		if(item && item->value && strlen(item->value) > 0) {
 			sdp_ip = g_strdup(item->value);
 			JANUS_LOG(LOG_VERB, "IP to advertise in SDP: %s\n", sdp_ip);
+		}
+
+		/* Make sure both IPs are valid, if provided */
+		janus_network_address_nullify(&janus_network_local_ip);
+		if(local_ip) {
+			if(janus_network_string_to_address(janus_network_query_options_any_ip, local_ip, &janus_network_local_ip) != 0) {
+				JANUS_LOG(LOG_ERR, "Invalid local media IP address [%s]...\n", local_ip);
+				return -1;
+			}
+			if((janus_network_local_ip.family == AF_INET && janus_network_local_ip.ipv4.s_addr == INADDR_ANY) ||
+					(janus_network_local_ip.family == AF_INET6 && IN6_IS_ADDR_UNSPECIFIED(&janus_network_local_ip.ipv6))) {
+				janus_network_address_nullify(&janus_network_local_ip);
+			}
+		}
+		JANUS_LOG(LOG_VERB, "Binding media address set to [%s]...\n", janus_network_address_is_null(&janus_network_local_ip) ? "any" : local_ip);
+		if(!sdp_ip) {
+			char *ip = janus_network_address_is_null(&janus_network_local_ip) ? local_ip : NULL;
+			if(ip) {
+				sdp_ip = g_strdup(ip);
+				JANUS_LOG(LOG_VERB, "IP to advertise in SDP: %s\n", sdp_ip);
+			}
 		}
 
 		item = janus_config_get(config, config_general, janus_config_type_item, "rtp_port_range");
@@ -794,19 +816,29 @@ int janus_nosip_init(janus_callbacks *callback, const char *config_path) {
 	/* This is the callback we'll need to invoke to contact the Janus core */
 	gateway = callback;
 
-	/* Finally, let's check if IPv6 is disabled, as we may need to know for RTP/RTCP sockets */
-	int fd = socket(AF_INET6, SOCK_DGRAM, IPPROTO_UDP);
-	if(fd <= 0) {
-		ipv6_disabled = TRUE;
-	} else {
-		int v6only = 0;
-		if(setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, &v6only, sizeof(v6only)) != 0)
+	if(janus_network_address_is_null(&janus_network_local_ip) ||
+			janus_network_local_ip.family == AF_INET6) {
+		/* Finally, let's check if IPv6 is disabled, as we may need to know for RTP/RTCP sockets */
+		int fd = socket(AF_INET6, SOCK_DGRAM, IPPROTO_UDP);
+		if(fd <= 0) {
 			ipv6_disabled = TRUE;
-	}
-	if(fd > 0)
-		close(fd);
-	if(ipv6_disabled) {
-		JANUS_LOG(LOG_WARN, "IPv6 disabled, will only use IPv4 for RTP/RTCP sockets (NoSIP)\n");
+		} else {
+			int v6only = 0;
+			if(setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, &v6only, sizeof(v6only)) != 0)
+				ipv6_disabled = TRUE;
+		}
+		if(fd > 0)
+			close(fd);
+		if(ipv6_disabled) {
+			if(!janus_network_address_is_null(&janus_network_local_ip)) {
+				JANUS_LOG(LOG_ERR, "IPv6 disabled and local media address is IPv6...\n");
+				return -1;
+			}
+			JANUS_LOG(LOG_WARN, "IPv6 disabled, will only use IPv4 for RTP/RTCP sockets (SIP)\n");
+		}
+	} else if(janus_network_local_ip.family == AF_INET) {
+		/* Disable if we have a specified IPv4 address for RTP/RTCP sockets */
+		ipv6_disabled = TRUE;
 	}
 
 	g_atomic_int_set(&initialized, 1);
@@ -898,7 +930,7 @@ void janus_nosip_create_session(janus_plugin_session *handle, int *error) {
 	session->sdp = NULL;
 	session->media.remote_audio_ip = NULL;
 	session->media.remote_video_ip = NULL;
-	session->media.ready = 0;
+	session->media.ready = FALSE;
 	session->media.require_srtp = FALSE;
 	session->media.has_srtp_local = FALSE;
 	session->media.has_srtp_remote = FALSE;
@@ -907,7 +939,7 @@ void janus_nosip_create_session(janus_plugin_session *handle, int *error) {
 	session->media.audio_srtp_local_crypto = NULL;
 	session->media.video_srtp_local_profile = NULL;
 	session->media.video_srtp_local_crypto = NULL;
-	session->media.has_audio = 0;
+	session->media.has_audio = FALSE;
 	session->media.audio_rtp_fd = -1;
 	session->media.audio_rtcp_fd = -1;
 	session->media.local_audio_rtp_port = 0;
@@ -920,7 +952,7 @@ void janus_nosip_create_session(janus_plugin_session *handle, int *error) {
 	session->media.opusred_pt = -1;
 	session->media.audio_pt_name = NULL;
 	session->media.audio_send = TRUE;
-	session->media.has_video = 0;
+	session->media.has_video = FALSE;
 	session->media.video_rtp_fd = -1;
 	session->media.video_rtcp_fd = -1;
 	session->media.local_video_rtp_port = 0;
@@ -1453,11 +1485,11 @@ static void *janus_nosip_handler(void *data) {
 				/* Allocate RTP ports and merge them with the anonymized SDP */
 				if(strstr(msg_sdp, "m=audio") && !strstr(msg_sdp, "m=audio 0")) {
 					JANUS_LOG(LOG_VERB, "Going to negotiate audio...\n");
-					session->media.has_audio = 1;	/* FIXME Maybe we need a better way to signal this */
+					session->media.has_audio = TRUE;	/* FIXME Maybe we need a better way to signal this */
 				}
 				if(strstr(msg_sdp, "m=video") && !strstr(msg_sdp, "m=video 0")) {
 					JANUS_LOG(LOG_VERB, "Going to negotiate video...\n");
-					session->media.has_video = 1;	/* FIXME Maybe we need a better way to signal this */
+					session->media.has_video = TRUE;	/* FIXME Maybe we need a better way to signal this */
 				}
 				janus_mutex_lock(&session->mutex);
 				if(janus_nosip_allocate_local_ports(session, sdp_update) < 0) {
@@ -1565,7 +1597,7 @@ static void *janus_nosip_handler(void *data) {
 			/* If this is an answer, start the media */
 			if(!sdp_update && !offer) {
 				/* Start the media */
-				session->media.ready = 1;	/* FIXME Maybe we need a better way to signal this */
+				session->media.ready = TRUE;	/* FIXME Maybe we need a better way to signal this */
 				GError *error = NULL;
 				char tname[16];
 				g_snprintf(tname, sizeof(tname), "nosiprtp %p", session);
@@ -1573,7 +1605,7 @@ static void *janus_nosip_handler(void *data) {
 				session->relayer_thread = g_thread_try_new(tname, janus_nosip_relay_thread, session, &error);
 				if(error != NULL) {
 					session->relayer_thread = NULL;
-					session->media.ready = 0;
+					session->media.ready = FALSE;
 					janus_refcount_decrease(&session->ref);
 					JANUS_LOG(LOG_ERR, "Got error %d (%s) trying to launch the RTP/RTCP thread...\n",
 						error->code, error->message ? error->message : "??");
@@ -1803,7 +1835,7 @@ void janus_nosip_sdp_process(janus_nosip_session *session, janus_sdp *sdp, gbool
 					if(changed)
 						*changed = TRUE;
 				}
-				session->media.has_audio = 1;
+				session->media.has_audio = TRUE;
 				session->media.remote_audio_rtp_port = m->port;
 				session->media.remote_audio_rtcp_port = m->port+1;	/* FIXME We're assuming RTCP is on the next port */
 				if(m->direction == JANUS_SDP_SENDONLY || m->direction == JANUS_SDP_INACTIVE)
@@ -1820,7 +1852,7 @@ void janus_nosip_sdp_process(janus_nosip_session *session, janus_sdp *sdp, gbool
 					if(changed)
 						*changed = TRUE;
 				}
-				session->media.has_video = 1;
+				session->media.has_video = TRUE;
 				session->media.remote_video_rtp_port = m->port;
 				session->media.remote_video_rtcp_port = m->port+1;	/* FIXME We're assuming RTCP is on the next port */
 				if(m->direction == JANUS_SDP_SENDONLY || m->direction == JANUS_SDP_INACTIVE)
@@ -1936,7 +1968,7 @@ char *janus_nosip_sdp_manipulate(janus_nosip_session *session, janus_sdp *sdp, g
 	JANUS_LOG(LOG_VERB, "Setting protocol to %s\n", session->media.require_srtp ? "RTP/SAVP" : "RTP/AVP");
 	if(sdp->c_addr) {
 		g_free(sdp->c_addr);
-		sdp->c_addr = g_strdup(sdp_ip ? sdp_ip : local_ip);
+		sdp->c_addr = g_strdup(sdp_ip);
 	}
 	int opusred_pt = answer ? janus_sdp_get_opusred_pt(sdp, -1) : -1;
 	GList *temp = sdp->m_lines;
@@ -1998,20 +2030,23 @@ char *janus_nosip_sdp_manipulate(janus_nosip_session *session, janus_sdp *sdp, g
 }
 
 static int janus_nosip_bind_socket(int fd, int port) {
+	gboolean use_ipv6_address_family = !ipv6_disabled &&
+		(janus_network_address_is_null(&janus_network_local_ip) || janus_network_local_ip.family == AF_INET6);
+	socklen_t addrlen = use_ipv6_address_family? sizeof(struct sockaddr_in6) : sizeof(struct sockaddr_in);
 	struct sockaddr_storage rtp_address = { 0 };
-	if(!ipv6_disabled) {
+	if(use_ipv6_address_family) {
 		struct sockaddr_in6 *addr = (struct sockaddr_in6 *)&rtp_address;
 		addr->sin6_family = AF_INET6;
 		addr->sin6_port = htons(port);
-		addr->sin6_addr = in6addr_any;
+		addr->sin6_addr = janus_network_address_is_null(&janus_network_local_ip) ? in6addr_any : janus_network_local_ip.ipv6;
 	} else {
 		struct sockaddr_in *addr = (struct sockaddr_in *)&rtp_address;
 		addr->sin_family = AF_INET;
 		addr->sin_port = htons(port);
-		addr->sin_addr.s_addr = INADDR_ANY;
+		addr->sin_addr.s_addr = janus_network_address_is_null(&janus_network_local_ip) ? INADDR_ANY : janus_network_local_ip.ipv4.s_addr;
 	}
-	if(bind(fd, (struct sockaddr *)(&rtp_address), sizeof(rtp_address)) < 0) {
-		JANUS_LOG(LOG_ERR, "Bind failed (port %d)\n", port);
+	if(bind(fd, (struct sockaddr *)(&rtp_address), addrlen) < 0) {
+		JANUS_LOG(LOG_ERR, "Bind failed (port %d), error (%s)\n", port, g_strerror(errno));
 		return -1;
 	}
 	return 0;
@@ -2023,6 +2058,9 @@ static int janus_nosip_allocate_port_pair(gboolean video, int fds[2], int ports[
 	uint16_t rtp_port_start = rtp_port_next;
 	gboolean rtp_port_wrap = FALSE;
 
+	gboolean use_ipv6_address_family = !ipv6_disabled &&
+		(janus_network_address_is_null(&janus_network_local_ip) || janus_network_local_ip.family == AF_INET6);
+
 	int rtp_fd = -1, rtcp_fd = -1;
 	while(1) {
 		if(rtp_port_wrap && rtp_port_next >= rtp_port_start) {	/* Full range scanned */
@@ -2031,9 +2069,9 @@ static int janus_nosip_allocate_port_pair(gboolean video, int fds[2], int ports[
 			break;
 		}
 		if(rtp_fd == -1) {
-			rtp_fd = socket(!ipv6_disabled ? AF_INET6 : AF_INET, SOCK_DGRAM, 0);
+			rtp_fd = socket(use_ipv6_address_family ? AF_INET6 : AF_INET, SOCK_DGRAM, 0);
 			int v6only = 0;
-			if(!ipv6_disabled && rtp_fd != -1 && setsockopt(rtp_fd, IPPROTO_IPV6, IPV6_V6ONLY, &v6only, sizeof(v6only)) != 0) {
+			if(use_ipv6_address_family && rtp_fd != -1 && setsockopt(rtp_fd, IPPROTO_IPV6, IPV6_V6ONLY, &v6only, sizeof(v6only)) != 0) {
 				JANUS_LOG(LOG_WARN, "Error setting v6only to false on RTP socket (error=%s)\n",
 					g_strerror(errno));
 			}
@@ -2056,8 +2094,8 @@ static int janus_nosip_allocate_port_pair(gboolean video, int fds[2], int ports[
 		}
 		if(rtcp_fd == -1) {
 			int v6only = 0;
-			rtcp_fd = socket(!ipv6_disabled ? AF_INET6 : AF_INET, SOCK_DGRAM, 0);
-			if(!ipv6_disabled && rtcp_fd != -1 && setsockopt(rtcp_fd, IPPROTO_IPV6, IPV6_V6ONLY, &v6only, sizeof(v6only)) != 0) {
+			rtcp_fd = socket(use_ipv6_address_family ? AF_INET6 : AF_INET, SOCK_DGRAM, 0);
+			if(use_ipv6_address_family && rtcp_fd != -1 && setsockopt(rtcp_fd, IPPROTO_IPV6, IPV6_V6ONLY, &v6only, sizeof(v6only)) != 0) {
 				JANUS_LOG(LOG_WARN, "Error setting v6only to false on RTP socket (error=%s)\n",
 					g_strerror(errno));
 			}

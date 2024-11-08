@@ -140,17 +140,51 @@ const char *janus_ice_get_nomination_mode(void) {
 }
 #endif
 
+/* ICE consent freshness */
+static gboolean janus_ice_consent_freshness = FALSE;
+void janus_ice_set_consent_freshness_enabled(gboolean enabled) {
+#ifndef HAVE_CONSENT_FRESHNESS
+	if(enabled) {
+		JANUS_LOG(LOG_WARN, "libnice version doesn't support consent freshness\n");
+		return;
+	}
+#endif
+	janus_ice_consent_freshness = enabled;
+	if(janus_ice_consent_freshness) {
+		JANUS_LOG(LOG_INFO, "Using content freshness checks in PeerConnection\n");
+		janus_ice_set_keepalive_conncheck_enabled(TRUE);
+	}
+}
+gboolean janus_ice_is_consent_freshness_enabled(void) {
+	return janus_ice_consent_freshness;
+}
+
 /* Keepalive via connectivity checks */
 static gboolean janus_ice_keepalive_connchecks = FALSE;
 void janus_ice_set_keepalive_conncheck_enabled(gboolean enabled) {
+	if(janus_ice_consent_freshness && !enabled) {
+		JANUS_LOG(LOG_WARN, "Can't disable connectivity checks as PeerConnection keep-alive, consent freshness is enabled\n");
+		return;
+	}
 	janus_ice_keepalive_connchecks = enabled;
 	if(janus_ice_keepalive_connchecks) {
-		JANUS_LOG(LOG_INFO, "Using connectivity checks as PeerConnection keep-alives\n");
-		JANUS_LOG(LOG_WARN, "Notice that the current libnice master is breaking connections after 50s when keepalive-conncheck enabled. As such, better to stick to 0.1.18 until the issue is addressed upstream\n");
+		JANUS_LOG(LOG_INFO, "Using connectivity checks as PeerConnection keep-alive\n");
 	}
 }
 gboolean janus_ice_is_keepalive_conncheck_enabled(void) {
 	return janus_ice_keepalive_connchecks;
+}
+
+/* How to react to ICE failures */
+static gboolean janus_ice_hangup_on_failed = FALSE;
+void janus_ice_set_hangup_on_failed_enabled(gboolean enabled) {
+	janus_ice_hangup_on_failed = enabled;
+	if(janus_ice_hangup_on_failed) {
+		JANUS_LOG(LOG_INFO, "Will hangup PeerConnections immediately on ICE failures\n");
+	}
+}
+gboolean janus_ice_is_hangup_on_failed_enabled(void) {
+	return janus_ice_hangup_on_failed;
 }
 
 /* Opaque IDs set by applications are by default only passed to event handlers
@@ -394,6 +428,12 @@ void janus_ice_event_set_combine_media_stats(gboolean combine_media_stats_to_one
 }
 gboolean janus_ice_event_get_combine_media_stats(void) {
 	return janus_ice_event_combine_media_stats;
+}
+
+/* Number of active PeerConnection (for stats) */
+static volatile gint pc_num = 0;
+int janus_ice_get_peerconnection_num(void) {
+	return g_atomic_int_get(&pc_num);
 }
 
 /* RTP/RTCP port range */
@@ -854,6 +894,25 @@ static void janus_ice_notify_media(janus_ice_handle *handle, char *mid, gboolean
 		janus_events_notify_handlers(JANUS_EVENT_TYPE_MEDIA, JANUS_EVENT_SUBTYPE_MEDIA_STATE,
 			session->session_id, handle->handle_id, handle->opaque_id, info);
 	}
+}
+
+static void janus_ice_notify_ice_failed(janus_ice_handle *handle) {
+	if(handle == NULL)
+		return;
+	/* Prepare JSON event to notify user/application */
+	JANUS_LOG(LOG_VERB, "[%"SCNu64"] Notifying WebRTC ICE failure; %p\n", handle->handle_id, handle);
+	janus_session *session = (janus_session *)handle->session;
+	if(session == NULL)
+		return;
+	json_t *event = json_object();
+	json_object_set_new(event, "janus", json_string("ice-failed"));
+	json_object_set_new(event, "session_id", json_integer(session->session_id));
+	json_object_set_new(event, "sender", json_integer(handle->handle_id));
+	if(opaqueid_in_api && handle->opaque_id != NULL)
+		json_object_set_new(event, "opaque_id", json_string(handle->opaque_id));
+	/* Send the event */
+	JANUS_LOG(LOG_VERB, "[%"SCNu64"] Sending event to transport...; %p\n", handle->handle_id, handle);
+	janus_session_notify_event(session, event);
 }
 
 void janus_ice_notify_hangup(janus_ice_handle *handle, const char *reason) {
@@ -1352,6 +1411,7 @@ janus_ice_handle *janus_ice_handle_create(void *core_session, const char *opaque
 	handle->queued_candidates = g_async_queue_new();
 	handle->queued_packets = g_async_queue_new();
 	janus_mutex_init(&handle->mutex);
+	janus_flags_set(&handle->webrtc_flags, JANUS_ICE_HANDLE_WEBRTC_ALERT);
 	janus_session_handles_insert(session, handle);
 	return handle;
 }
@@ -1617,6 +1677,8 @@ void janus_ice_webrtc_hangup(janus_ice_handle *handle, const char *reason) {
 #endif
 		g_main_context_wakeup(handle->mainctx);
 	}
+	if(g_atomic_int_dec_and_test(&handle->has_pc))
+		g_atomic_int_dec_and_test(&pc_num);
 }
 
 static void janus_ice_webrtc_free(janus_ice_handle *handle) {
@@ -1822,6 +1884,10 @@ janus_ice_peerconnection_medium *janus_ice_peerconnection_medium_create(janus_ic
 		}
 		medium->rtcp_ctx[0] = g_malloc0(sizeof(janus_rtcp_context));
 		medium->rtcp_ctx[0]->tb = (type == JANUS_MEDIA_VIDEO ? 90000 : 48000);	/* May change later */
+		medium->rtcp_ctx[0]->in_link_quality = 100;
+		medium->rtcp_ctx[0]->in_media_link_quality = 100;
+		medium->rtcp_ctx[0]->out_link_quality = 100;
+		medium->rtcp_ctx[0]->out_media_link_quality = 100;
 		/* We can address media by SSRC */
 		g_hash_table_insert(pc->media_byssrc, GINT_TO_POINTER(medium->ssrc), medium);
 		janus_refcount_increase(&medium->ref);
@@ -1992,6 +2058,7 @@ static gboolean janus_ice_check_failed(gpointer data) {
 	if(pc->state == NICE_COMPONENT_STATE_CONNECTED || pc->state == NICE_COMPONENT_STATE_READY) {
 		/* ICE succeeded in the meanwhile, get rid of this timer */
 		JANUS_LOG(LOG_VERB, "[%"SCNu64"] ICE succeeded, disabling ICE state check timer!\n", handle->handle_id);
+		pc->icefailed_detected = 0;
 		goto stoptimer;
 	}
 	/* Still in the failed state, how much time passed since we first detected it? */
@@ -2045,7 +2112,7 @@ static void janus_ice_cb_candidate_gathering_done(NiceAgent *agent, guint stream
 		return;
 	}
 	pc->gathered = janus_get_monotonic_time();
-	pc->cdone = 1;
+	pc->cdone = TRUE;
 	/* If we're doing full-trickle, send an event to the user too */
 	if(janus_full_trickle_enabled) {
 		/* Send a "trickle" event with completed:true to the browser */
@@ -2068,6 +2135,7 @@ static void janus_ice_cb_component_state_changed(NiceAgent *agent, guint stream_
 		JANUS_LOG(LOG_ERR, "[%"SCNu64"]     No stream %d??\n", handle->handle_id, stream_id);
 		return;
 	}
+	guint prev_state = pc->state;
 	pc->state = state;
 	/* Notify event handlers */
 	if(janus_events_is_enabled()) {
@@ -2085,6 +2153,19 @@ static void janus_ice_cb_component_state_changed(NiceAgent *agent, guint stream_
 		gboolean alert_set = janus_flags_is_set(&handle->webrtc_flags, JANUS_ICE_HANDLE_WEBRTC_ALERT);
 		if(alert_set)
 			return;
+		if(prev_state == NICE_COMPONENT_STATE_CONNECTED || prev_state == NICE_COMPONENT_STATE_READY) {
+			/* Failed after connected/ready means consent freshness detected something broken:
+			 * notify the user via a Janus API event and then fire the 'failed' timer as sual */
+			janus_ice_notify_ice_failed(handle);
+			/* Check if we need to hangup right away, rather than start the grace period */
+			if(janus_ice_hangup_on_failed && pc->icefailed_detected == 0) {
+				/* We do, hangup the PeerConnection */
+				JANUS_LOG(LOG_ERR, "[%"SCNu64"] ICE failed for component %d in stream %d...\n",
+					handle->handle_id, component_id, stream_id);
+				janus_ice_webrtc_hangup(handle, "ICE failed");
+				return;
+			}
+		}
 		gboolean trickle_recv = (!janus_flags_is_set(&handle->webrtc_flags, JANUS_ICE_HANDLE_WEBRTC_TRICKLE) || janus_flags_is_set(&handle->webrtc_flags, JANUS_ICE_HANDLE_WEBRTC_ALL_TRICKLES));
 		gboolean answer_recv = janus_flags_is_set(&handle->webrtc_flags, JANUS_ICE_HANDLE_WEBRTC_GOT_ANSWER);
 		JANUS_LOG(LOG_WARN, "[%"SCNu64"] ICE failed for component %d in stream %d, but let's give it some time... (trickle %s, answer %s, alert %s)\n",
@@ -2816,6 +2897,13 @@ static void janus_ice_cb_nice_recv(NiceAgent *agent, guint stream_id, guint comp
 						memcpy(rtp.extensions.dd_content, dd, len);
 					}
 				}
+				if(pc->abs_capture_time_ext_id != -1) {
+					uint64_t abs_ts = 0;
+					if(janus_rtp_header_extension_parse_abs_capture_time(buf, buflen,
+							pc->abs_capture_time_ext_id, &abs_ts) == 0) {
+						rtp.extensions.abs_capture_ts = abs_ts;
+					}
+				}
 				/* Pass the packet to the plugin */
 				janus_plugin *plugin = (janus_plugin *)handle->app;
 				if(plugin && plugin->incoming_rtp && handle->app_handle &&
@@ -3174,7 +3262,7 @@ static void janus_ice_cb_nice_recv(NiceAgent *agent, guint stream_id, guint comp
 				if (janus_rtcp_fix_report_data(buf, buflen, base_ts, base_ts_prev, ssrc_peer, ssrc_local, ssrc_expected, video) < 0) {
 					/* Drop packet in case of parsing error or SSRC different from the one expected. */
 					/* This might happen at the very beginning of the communication or early after */
-					/* a re-negotation has been concluded. */
+					/* a re-negotiation has been concluded. */
 					return;
 				}
 
@@ -3519,12 +3607,15 @@ int janus_ice_setup_local(janus_ice_handle *handle, gboolean offer, gboolean tri
 	JANUS_LOG(LOG_INFO, "[%"SCNu64"] Creating ICE agent (ICE %s mode, %s)\n", handle->handle_id,
 		janus_ice_lite_enabled ? "Lite" : "Full", handle->controlling ? "controlling" : "controlled");
 	handle->agent = g_object_new(NICE_TYPE_AGENT,
-		"compatibility", NICE_COMPATIBILITY_DRAFT19,
+		"compatibility", NICE_COMPATIBILITY_RFC5245,
 		"main-context", handle->mainctx,
 		"reliable", FALSE,
 		"full-mode", janus_ice_lite_enabled ? FALSE : TRUE,
 #ifdef HAVE_ICE_NOMINATION
 		"nomination-mode", janus_ice_nomination,
+#endif
+#ifdef HAVE_CONSENT_FRESHNESS
+		"consent-freshness", janus_ice_consent_freshness ? TRUE : FALSE,
 #endif
 		"keepalive-conncheck", janus_ice_keepalive_connchecks ? TRUE : FALSE,
 #ifdef HAVE_LIBNICE_TCP
@@ -3814,7 +3905,7 @@ static void janus_ice_rtp_extension_update(janus_ice_handle *handle, janus_ice_p
 		totlen += plen;
 	/* We need to strip extensions, here, and add those that need to be there manually */
 	uint16_t extlen = 0;
-	char extensions[300];
+	char extensions[320];
 	uint16_t extbufsize = sizeof(extensions);
 	janus_rtp_header *header = (janus_rtp_header *)packet->data;
 	header->extension = 0;
@@ -3825,7 +3916,8 @@ static void janus_ice_rtp_extension_update(janus_ice_handle *handle, janus_ice_p
 			(!video && packet->extensions.audio_level > -1 && handle->pc->audiolevel_ext_id > 0) ||
 			(video && packet->extensions.video_rotation > -1 && handle->pc->videoorientation_ext_id > 0) ||
 			(video && packet->extensions.min_delay > -1 && packet->extensions.max_delay > -1 && handle->pc->playoutdelay_ext_id > 0) ||
-			(video && packet->extensions.dd_len > 0 && handle->pc->dependencydesc_ext_id > 0)) {
+			(video && packet->extensions.dd_len > 0 && handle->pc->dependencydesc_ext_id > 0) ||
+			(packet->extensions.abs_capture_ts > 0 && handle->pc->abs_capture_time_ext_id > 0)) {
 		/* Do we need 2-byte extemsions, or are 1-byte extensions fine? */
 		gboolean use_2byte = (video && packet->extensions.dd_len > 16 && handle->pc->dependencydesc_ext_id > 0);
 		/* Write the extension(s) */
@@ -4006,6 +4098,24 @@ static void janus_ice_rtp_extension_update(janus_ice_handle *handle, janus_ice_p
 					extlen += packet->extensions.dd_len + 2;
 					extbufsize -= packet->extensions.dd_len + 2;
 				}
+			}
+		}
+		/* Check if we need to add the abs-capture-time extension */
+		if(packet->extensions.abs_capture_ts > 0 && handle->pc->abs_capture_time_ext_id > 0) {
+			uint64_t abs64 = htonll(packet->extensions.abs_capture_ts);
+			if(!use_2byte) {
+				*index = (handle->pc->abs_capture_time_ext_id << 4) + 7;
+				memcpy(index+1, &abs64, 8);
+				index += 9;
+				extlen += 9;
+				extbufsize -= 9;
+			} else {
+				*index = handle->pc->abs_capture_time_ext_id;
+				*(index+1) = 8;
+				memcpy(index+2, &abs64, 8);
+				index += 10;
+				extlen += 10;
+				extbufsize -= 10;
 			}
 		}
 		/* Calculate the whole length */
@@ -4208,7 +4318,8 @@ static gboolean janus_ice_outgoing_rtcp_handle(gpointer user_data) {
 				.video = (medium->type == JANUS_MEDIA_VIDEO), .buffer = rtcpbuf, .length = srlen+sdeslen };
 			janus_ice_relay_rtcp_internal(handle, medium, &rtcp, FALSE);
 			/* Check if we detected too many losses, and send a slowlink event in case */
-			guint lost = janus_rtcp_context_get_lost_all(rtcp_ctx, TRUE);
+			gint lost = janus_rtcp_context_get_lost_all(rtcp_ctx, TRUE);
+			lost = lost > 0 ? lost : 0;
 			janus_slow_link_update(medium, handle, TRUE, lost);
 		}
 		if(medium->recv) {
@@ -4234,7 +4345,8 @@ static gboolean janus_ice_outgoing_rtcp_handle(gpointer user_data) {
 					janus_ice_relay_rtcp_internal(handle, medium, &rtcp, FALSE);
 					if(vindex == 0) {
 						/* Check if we detected too many losses, and send a slowlink event in case */
-						guint lost = janus_rtcp_context_get_lost_all(medium->rtcp_ctx[vindex], FALSE);
+						gint lost = janus_rtcp_context_get_lost_all(medium->rtcp_ctx[vindex], FALSE);
+						lost = lost > 0 ? lost : 0;
 						janus_slow_link_update(medium, handle, FALSE, lost);
 					}
 				}
@@ -5186,4 +5298,6 @@ void janus_ice_dtls_handshake_done(janus_ice_handle *handle) {
 		janus_events_notify_handlers(JANUS_EVENT_TYPE_WEBRTC, JANUS_EVENT_SUBTYPE_WEBRTC_STATE,
 			session->session_id, handle->handle_id, handle->opaque_id, info);
 	}
+	g_atomic_int_set(&handle->has_pc, 1);
+	g_atomic_int_inc(&pc_num);
 }

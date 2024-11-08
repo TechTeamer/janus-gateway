@@ -18,6 +18,7 @@
 #include <inttypes.h>
 #include <string.h>
 #include <stdlib.h>
+#include <errno.h>
 
 #include "pp-l16.h"
 #include "../debug.h"
@@ -94,7 +95,7 @@ int janus_pp_l16_process(FILE *file, janus_pp_frame_packet *list, int *working) 
 		return -1;
 	janus_pp_frame_packet *tmp = list;
 	long int offset = 0;
-	int bytes = 0, len = 0, steps = 0, last_seq = 0;
+	int bytes = 0, len = 0, last_seq = 0;
 	uint8_t *buffer = g_malloc0(1500);
 	int16_t samples[1500];
 	memset(samples, 0, sizeof(samples));
@@ -148,7 +149,6 @@ int janus_pp_l16_process(FILE *file, janus_pp_frame_packet *list, int *working) 
 			last_seq = tmp->seq;
 		if(tmp->seq < last_seq) {
 			last_seq = tmp->seq;
-			steps++;
 		}
 		JANUS_LOG(LOG_VERB, "Writing %d bytes out of %d (seq=%"SCNu16", step=%"SCNu16", ts=%"SCNu64", time=%"SCNu64"s)\n",
 			bytes, tmp->len, tmp->seq, diff, tmp->ts, (tmp->ts-list->ts)/samplerate);
@@ -175,12 +175,17 @@ void janus_pp_l16_close(void) {
 	if(wav_file != NULL) {
 		/* Update the header */
 		fseek(wav_file, 0, SEEK_END);
-		uint32_t size = ftell(wav_file) - 8;
-		fseek(wav_file, 4, SEEK_SET);
-		fwrite(&size, sizeof(uint32_t), 1, wav_file);
-		size += 8;
-		fseek(wav_file, 40, SEEK_SET);
-		fwrite(&size, sizeof(uint32_t), 1, wav_file);
+		long int fs = ftell(wav_file);
+		if(fs < 8) {
+			JANUS_LOG(LOG_ERR, "Error getting file position, wav file will be broken... %s\n", g_strerror(errno));
+		} else {
+			uint32_t size = fs - 8;
+			fseek(wav_file, 4, SEEK_SET);
+			fwrite(&size, sizeof(uint32_t), 1, wav_file);
+			size += 8;
+			fseek(wav_file, 40, SEEK_SET);
+			fwrite(&size, sizeof(uint32_t), 1, wav_file);
+		}
 		fflush(wav_file);
 		fclose(wav_file);
 	}

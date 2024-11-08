@@ -50,7 +50,7 @@
 #define JANUS_SERVER_NAME		"MyJanusInstance"
 
 #ifdef __MACH__
-#define SHLIB_EXT "0.dylib"
+#define SHLIB_EXT "2.dylib"
 #else
 #define SHLIB_EXT ".so"
 #endif
@@ -366,7 +366,9 @@ static json_t *janus_info(const char *transaction) {
 #ifdef HAVE_ICE_NOMINATION
 	json_object_set_new(info, "ice-nomination", json_string(janus_ice_get_nomination_mode()));
 #endif
+	json_object_set_new(info, "ice-consent-freshness", janus_ice_is_consent_freshness_enabled() ? json_true() : json_false());
 	json_object_set_new(info, "ice-keepalive-conncheck", janus_ice_is_keepalive_conncheck_enabled() ? json_true() : json_false());
+	json_object_set_new(info, "hangup-on-failed", janus_ice_is_hangup_on_failed_enabled() ? json_true() : json_false());
 	json_object_set_new(info, "full-trickle", janus_ice_is_full_trickle_enabled() ? json_true() : json_false());
 	json_object_set_new(info, "mdns-enabled", janus_ice_is_mdns_enabled() ? json_true() : json_false());
 	json_object_set_new(info, "min-nack-queue", json_integer(janus_get_min_nack_queue()));
@@ -641,6 +643,9 @@ static janus_mutex sessions_mutex;
 static GHashTable *sessions = NULL;
 static GMainContext *sessions_watchdog_context = NULL;
 
+/* Counters */
+static volatile gint sessions_num = 0;
+static volatile gint handles_num = 0;
 
 static void janus_ice_handle_dereference(janus_ice_handle *handle) {
 	if(handle)
@@ -744,6 +749,20 @@ static gpointer janus_sessions_watchdog(gpointer user_data) {
 	return NULL;
 }
 
+static gboolean janus_status_sessions(gpointer user_data) {
+	if(janus_events_is_enabled()) {
+		json_t *info = json_object();
+		json_object_set_new(info, "status", json_string("update"));
+		json_t *details = json_object();
+		json_object_set_new(details, "sessions", json_integer(g_atomic_int_get(&sessions_num)));
+		json_object_set_new(details, "handles", json_integer(g_atomic_int_get(&handles_num)));
+		json_object_set_new(details, "peerconnections", json_integer(janus_ice_get_peerconnection_num()));
+		json_object_set_new(details, "stats-period", json_integer(janus_ice_get_event_stats_period()));
+		json_object_set_new(info, "info", details);
+		janus_events_notify_handlers(JANUS_EVENT_TYPE_CORE, JANUS_EVENT_SUBTYPE_CORE_STARTUP, 0, info);
+	}
+	return TRUE;
+}
 
 janus_session *janus_session_create(guint64 session_id) {
 	janus_session *session = NULL;
@@ -772,6 +791,7 @@ janus_session *janus_session_create(guint64 session_id) {
 	janus_mutex_init(&session->mutex);
 	janus_mutex_lock(&sessions_mutex);
 	g_hash_table_insert(sessions, janus_uint64_dup(session->session_id), session);
+	g_atomic_int_inc(&sessions_num);
 	janus_mutex_unlock(&sessions_mutex);
 	return session;
 }
@@ -840,13 +860,15 @@ void janus_session_handles_insert(janus_session *session, janus_ice_handle *hand
 		session->ice_handles = g_hash_table_new_full(g_int64_hash, g_int64_equal, (GDestroyNotify)g_free, (GDestroyNotify)janus_ice_handle_dereference);
 	janus_refcount_increase(&handle->ref);
 	g_hash_table_insert(session->ice_handles, janus_uint64_dup(handle->handle_id), handle);
+	g_atomic_int_inc(&handles_num);
 	janus_mutex_unlock(&session->mutex);
 }
 
 gint janus_session_handles_remove(janus_session *session, janus_ice_handle *handle) {
 	janus_mutex_lock(&session->mutex);
 	gint error = janus_ice_handle_destroy(session, handle);
-	g_hash_table_remove(session->ice_handles, &handle->handle_id);
+	if(g_hash_table_remove(session->ice_handles, &handle->handle_id))
+		g_atomic_int_dec_and_test(&handles_num);
 	janus_mutex_unlock(&session->mutex);
 	return error;
 }
@@ -864,6 +886,7 @@ void janus_session_handles_clear(janus_session *session) {
 				continue;
 			janus_ice_handle_destroy(session, handle);
 			g_hash_table_iter_remove(&iter);
+			g_atomic_int_dec_and_test(&handles_num);
 		}
 	}
 	janus_mutex_unlock(&session->mutex);
@@ -1260,7 +1283,8 @@ int janus_process_incoming_request(janus_request *request) {
 			goto jsondone;
 		}
 		janus_mutex_lock(&sessions_mutex);
-		g_hash_table_remove(sessions, &session->session_id);
+		if(g_hash_table_remove(sessions, &session->session_id))
+			g_atomic_int_dec_and_test(&sessions_num);
 		janus_mutex_unlock(&sessions_mutex);
 		/* Notify the source that the session has been destroyed */
 		janus_request *source = janus_session_get_request(session);
@@ -1567,12 +1591,12 @@ int janus_process_incoming_request(janus_request *request) {
 					}
 					janus_request_ice_handle_answer(handle, jsep_sdp);
 					/* Check if the answer does contain the mid/abs-send-time/twcc extmaps */
-					int mindex = 0;
-					gboolean do_mid = FALSE, do_twcc = FALSE, do_dd = FALSE, do_abs_send_time = FALSE;
+					gboolean do_mid = FALSE, do_twcc = FALSE, do_dd = FALSE, do_abs_send_time = FALSE, do_abs_capture_time = FALSE;
 					GList *temp = parsed_sdp->m_lines;
 					while(temp) {
 						janus_sdp_mline *m = (janus_sdp_mline *)temp->data;
-						gboolean have_mid = FALSE, have_twcc = FALSE, have_dd = FALSE, have_abs_send_time = FALSE;
+						gboolean have_mid = FALSE, have_twcc = FALSE, have_dd = FALSE,
+							have_abs_send_time = FALSE, have_abs_capture_time = FALSE;
 						GList *tempA = m->attributes;
 						while(tempA) {
 							janus_sdp_attribute *a = (janus_sdp_attribute *)tempA->data;
@@ -1585,6 +1609,8 @@ int janus_process_incoming_request(janus_request *request) {
 									have_dd = TRUE;
 								else if(strstr(a->value, JANUS_RTP_EXTMAP_ABS_SEND_TIME))
 									have_abs_send_time = TRUE;
+								else if(strstr(a->value, JANUS_RTP_EXTMAP_ABS_CAPTURE_TIME))
+									have_abs_capture_time = TRUE;
 							}
 							tempA = tempA->next;
 						}
@@ -1592,7 +1618,7 @@ int janus_process_incoming_request(janus_request *request) {
 						do_twcc = do_twcc || have_twcc;
 						do_dd = do_dd || have_dd;
 						do_abs_send_time = do_abs_send_time || have_abs_send_time;
-						mindex++;
+						do_abs_capture_time = do_abs_capture_time || have_abs_capture_time;
 						temp = temp->next;
 					}
 					if(!do_mid && handle->pc)
@@ -1605,6 +1631,8 @@ int janus_process_incoming_request(janus_request *request) {
 						handle->pc->dependencydesc_ext_id = 0;
 					if(!do_abs_send_time && handle->pc)
 						handle->pc->abs_send_time_ext_id = 0;
+					if(!do_abs_capture_time && handle->pc)
+						handle->pc->abs_capture_time_ext_id = 0;
 				} else {
 					/* Check if the mid RTP extension is being negotiated */
 					handle->pc->mid_ext_id = janus_rtp_header_extension_get_id(jsep_sdp, JANUS_RTP_EXTMAP_MID);
@@ -1619,6 +1647,8 @@ int janus_process_incoming_request(janus_request *request) {
 					handle->pc->playoutdelay_ext_id = janus_rtp_header_extension_get_id(jsep_sdp, JANUS_RTP_EXTMAP_PLAYOUT_DELAY);
 					/* Check if the abs-send-time ID extension is being negotiated */
 					handle->pc->abs_send_time_ext_id = janus_rtp_header_extension_get_id(jsep_sdp, JANUS_RTP_EXTMAP_ABS_SEND_TIME);
+					/* Check if the abs-capture-time ID extension is being negotiated */
+					handle->pc->abs_capture_time_ext_id = janus_rtp_header_extension_get_id(jsep_sdp, JANUS_RTP_EXTMAP_ABS_CAPTURE_TIME);
 					/* Check if transport wide CC is supported */
 					int transport_wide_cc_ext_id = janus_rtp_header_extension_get_id(jsep_sdp, JANUS_RTP_EXTMAP_TRANSPORT_WIDE_CC);
 					handle->pc->do_transport_wide_cc = transport_wide_cc_ext_id > 0 ? TRUE : FALSE;
@@ -1685,6 +1715,8 @@ int janus_process_incoming_request(janus_request *request) {
 					handle->pc->playoutdelay_ext_id = janus_rtp_header_extension_get_id(jsep_sdp, JANUS_RTP_EXTMAP_PLAYOUT_DELAY);
 					/* Check if the abs-send-time ID extension is being negotiated */
 					handle->pc->abs_send_time_ext_id = janus_rtp_header_extension_get_id(jsep_sdp, JANUS_RTP_EXTMAP_ABS_SEND_TIME);
+					/* Check if the abs-capture-time ID extension is being negotiated */
+					handle->pc->abs_capture_time_ext_id = janus_rtp_header_extension_get_id(jsep_sdp, JANUS_RTP_EXTMAP_ABS_CAPTURE_TIME);
 					/* Check if transport wide CC is supported */
 					int transport_wide_cc_ext_id = janus_rtp_header_extension_get_id(jsep_sdp, JANUS_RTP_EXTMAP_TRANSPORT_WIDE_CC);
 					handle->pc->do_transport_wide_cc = transport_wide_cc_ext_id > 0 ? TRUE : FALSE;
@@ -2826,7 +2858,8 @@ int janus_process_incoming_admin_request(janus_request *request) {
 		/* Session-related */
 		if(!strcasecmp(message_text, "destroy_session")) {
 			janus_mutex_lock(&sessions_mutex);
-			g_hash_table_remove(sessions, &session->session_id);
+			if(g_hash_table_remove(sessions, &session->session_id))
+				g_atomic_int_dec_and_test(&sessions_num);
 			janus_mutex_unlock(&sessions_mutex);
 			/* Notify the source that the session has been destroyed */
 			janus_request *source = janus_session_get_request(session);
@@ -3232,6 +3265,8 @@ json_t *janus_admin_peerconnection_summary(janus_ice_peerconnection *pc) {
 		json_object_set_new(se, JANUS_RTP_EXTMAP_REPAIRED_RID, json_integer(pc->ridrtx_ext_id));
 	if(pc->abs_send_time_ext_id > 0)
 		json_object_set_new(se, JANUS_RTP_EXTMAP_ABS_SEND_TIME, json_integer(pc->abs_send_time_ext_id));
+	if(pc->abs_capture_time_ext_id > 0)
+		json_object_set_new(se, JANUS_RTP_EXTMAP_ABS_SEND_TIME, json_integer(pc->abs_capture_time_ext_id));
 	if(pc->transport_wide_cc_ext_id > 0)
 		json_object_set_new(se, JANUS_RTP_EXTMAP_TRANSPORT_WIDE_CC, json_integer(pc->transport_wide_cc_ext_id));
 	if(pc->audiolevel_ext_id > 0)
@@ -3800,7 +3835,7 @@ json_t *janus_plugin_handle_sdp(janus_plugin_session *plugin_session, janus_plug
 		}
 		/* Make sure we don't send the rid/repaired-rid attributes when offering ourselves */
 		int mindex = 0;
-		int mid_ext_id = 0, transport_wide_cc_ext_id = 0, abs_send_time_ext_id = 0,
+		int mid_ext_id = 0, transport_wide_cc_ext_id = 0, abs_send_time_ext_id = 0, abs_capture_time_ext_id = 0,
 			audiolevel_ext_id = 0, videoorientation_ext_id = 0, playoutdelay_ext_id = 0, dependencydesc_ext_id = 0;
 		GList *temp = parsed_sdp->m_lines;
 		while(temp) {
@@ -3818,6 +3853,8 @@ json_t *janus_plugin_handle_sdp(janus_plugin_session *plugin_session, janus_plug
 							transport_wide_cc_ext_id = atoi(a->value);
 						else if(strstr(a->value, JANUS_RTP_EXTMAP_ABS_SEND_TIME))
 							abs_send_time_ext_id = atoi(a->value);
+						else if(strstr(a->value, JANUS_RTP_EXTMAP_ABS_CAPTURE_TIME))
+							abs_capture_time_ext_id = atoi(a->value);
 						else if(strstr(a->value, JANUS_RTP_EXTMAP_AUDIO_LEVEL))
 							audiolevel_ext_id = atoi(a->value);
 						else if(strstr(a->value, JANUS_RTP_EXTMAP_VIDEO_ORIENTATION))
@@ -3854,6 +3891,8 @@ json_t *janus_plugin_handle_sdp(janus_plugin_session *plugin_session, janus_plug
 		}
 		if(ice_handle->pc && ice_handle->pc->abs_send_time_ext_id != abs_send_time_ext_id)
 			ice_handle->pc->abs_send_time_ext_id = abs_send_time_ext_id;
+		if(ice_handle->pc && ice_handle->pc->abs_capture_time_ext_id != abs_capture_time_ext_id)
+			ice_handle->pc->abs_capture_time_ext_id = abs_capture_time_ext_id;
 		if(ice_handle->pc && ice_handle->pc->audiolevel_ext_id != audiolevel_ext_id)
 			ice_handle->pc->audiolevel_ext_id = audiolevel_ext_id;
 		if(ice_handle->pc && ice_handle->pc->videoorientation_ext_id != videoorientation_ext_id)
@@ -3867,7 +3906,7 @@ json_t *janus_plugin_handle_sdp(janus_plugin_session *plugin_session, janus_plug
 		/* Check if the answer does contain the mid/rid/repaired-rid/abs-send-time/twcc extmaps */
 		int mindex = 0;
 		gboolean do_mid = FALSE, do_rid = FALSE, do_repaired_rid = FALSE,
-			do_dd = FALSE, do_twcc = FALSE, do_abs_send_time = FALSE;
+			do_dd = FALSE, do_twcc = FALSE, do_abs_send_time = FALSE, do_abs_capture_time = FALSE;
 		GList *temp = parsed_sdp->m_lines;
 		janus_mutex_lock(&ice_handle->mutex);
 		while(temp) {
@@ -3875,7 +3914,8 @@ json_t *janus_plugin_handle_sdp(janus_plugin_session *plugin_session, janus_plug
 			janus_ice_peerconnection_medium *medium = ice_handle->pc ?
 				g_hash_table_lookup(ice_handle->pc->media, GUINT_TO_POINTER(mindex)) : NULL;
 			gboolean have_mid = FALSE, have_rid = FALSE, have_repaired_rid = FALSE,
-				have_twcc = FALSE, have_dd = FALSE, have_abs_send_time = FALSE, have_msid = FALSE;
+				have_twcc = FALSE, have_dd = FALSE, have_abs_send_time = FALSE,
+				have_abs_capture_time = FALSE, have_msid = FALSE;
 			int opusred_pt = -1;
 			GList *tempA = m->attributes;
 			while(tempA) {
@@ -3921,6 +3961,8 @@ json_t *janus_plugin_handle_sdp(janus_plugin_session *plugin_session, janus_plug
 						do_dd = TRUE;
 					else if(strstr(a->value, JANUS_RTP_EXTMAP_ABS_SEND_TIME))
 						have_abs_send_time = TRUE;
+					else if(strstr(a->value, JANUS_RTP_EXTMAP_ABS_CAPTURE_TIME))
+						have_abs_capture_time = TRUE;
 				} else if(m->type == JANUS_SDP_AUDIO && medium != NULL && medium->opusred_pt > 0 &&
 						a->name && a->value && !strcasecmp(a->name, "rtpmap") && strstr(a->value, "red/48000/2")) {
 					opusred_pt = atoi(a->value);
@@ -3955,6 +3997,7 @@ json_t *janus_plugin_handle_sdp(janus_plugin_session *plugin_session, janus_plug
 			do_twcc = do_twcc || have_twcc;
 			do_dd = do_dd || have_dd;
 			do_abs_send_time = do_abs_send_time || have_abs_send_time;
+			do_abs_capture_time = do_abs_capture_time || have_abs_capture_time;
 			mindex++;
 			temp = temp->next;
 		}
@@ -3974,6 +4017,8 @@ json_t *janus_plugin_handle_sdp(janus_plugin_session *plugin_session, janus_plug
 			ice_handle->pc->dependencydesc_ext_id = 0;
 		if(!do_abs_send_time && ice_handle->pc)
 			ice_handle->pc->abs_send_time_ext_id = 0;
+		if(!do_abs_capture_time && ice_handle->pc)
+			ice_handle->pc->abs_capture_time_ext_id = 0;
 		janus_mutex_unlock(&ice_handle->mutex);
 	}
 	if(!updating && !janus_ice_is_full_trickle_enabled()) {
@@ -4363,6 +4408,7 @@ gint main(int argc, char *argv[]) {
 	g_print("Janus version: %d (%s)\n", janus_version, janus_version_string);
 	g_print("Janus commit: %s\n", janus_build_git_sha);
 	g_print("Compiled on:  %s\n\n", janus_build_git_time);
+	janus_mark_started();
 
 	/* Initialize some command line options defaults */
 	options.debug_level = -1;
@@ -4375,6 +4421,11 @@ gint main(int argc, char *argv[]) {
 	/* Let's call our cmdline parser */
 	if(!janus_options_parse(&options, argc, argv))
 		exit(1);
+
+	if(options.print_version) {
+		janus_options_destroy();
+		exit(0);
+	}
 
 	/* Any configuration to open? */
 	if(options.config_file) {
@@ -5178,9 +5229,15 @@ gint main(int argc, char *argv[]) {
 		janus_ice_set_nomination_mode(item->value);
 #endif
 	}
+	item = janus_config_get(config, config_nat, janus_config_type_item, "ice_consent_freshness");
+	if(item && item->value)
+		janus_ice_set_consent_freshness_enabled(janus_is_true(item->value));
 	item = janus_config_get(config, config_nat, janus_config_type_item, "ice_keepalive_conncheck");
 	if(item && item->value)
 		janus_ice_set_keepalive_conncheck_enabled(janus_is_true(item->value));
+	item = janus_config_get(config, config_nat, janus_config_type_item, "hangup_on_failed");
+	if(item && item->value)
+		janus_ice_set_hangup_on_failed_enabled(janus_is_true(item->value));
 	if(janus_ice_set_turn_server(turn_server, turn_port, turn_type, turn_user, turn_pwd) < 0) {
 		if(!ignore_unreachable_ice_server) {
 			JANUS_LOG(LOG_FATAL, "Invalid TURN address %s:%u\n", turn_server, turn_port);
@@ -5587,6 +5644,11 @@ gint main(int argc, char *argv[]) {
 			janus_options_destroy();
 			exit(1);
 		}
+		/* Send a status event every once in a while */
+		GSource *timeout_source = g_timeout_source_new_seconds(15);
+		g_source_set_callback(timeout_source, janus_status_sessions, sessions_watchdog_context, NULL);
+		g_source_attach(timeout_source, sessions_watchdog_context);
+		g_source_unref(timeout_source);
 	}
 
 	/* Load plugins */
@@ -5905,11 +5967,11 @@ gint main(int argc, char *argv[]) {
 	JANUS_LOG(LOG_INFO, "Closing transport plugins:\n");
 	if(transports != NULL && g_hash_table_size(transports) > 0) {
 		g_hash_table_foreach(transports, janus_transport_close, NULL);
-		g_hash_table_destroy(transports);
+		g_clear_pointer(&transports, g_hash_table_destroy);
 	}
 	if(transports_so != NULL && g_hash_table_size(transports_so) > 0) {
 		g_hash_table_foreach(transports_so, janus_transportso_close, NULL);
-		g_hash_table_destroy(transports_so);
+		g_clear_pointer(&transports_so, g_hash_table_destroy);
 	}
 	/* Get rid of requests tasks and thread too */
 	g_thread_pool_free(tasks, FALSE, FALSE);
@@ -5936,22 +5998,22 @@ gint main(int argc, char *argv[]) {
 	JANUS_LOG(LOG_INFO, "Closing plugins:\n");
 	if(plugins != NULL && g_hash_table_size(plugins) > 0) {
 		g_hash_table_foreach(plugins, janus_plugin_close, NULL);
-		g_hash_table_destroy(plugins);
+		g_clear_pointer(&plugins, g_hash_table_destroy);
 	}
 	if(plugins_so != NULL && g_hash_table_size(plugins_so) > 0) {
 		g_hash_table_foreach(plugins_so, janus_pluginso_close, NULL);
-		g_hash_table_destroy(plugins_so);
+		g_clear_pointer(&plugins_so, g_hash_table_destroy);
 	}
 
 	JANUS_LOG(LOG_INFO, "Closing event handlers:\n");
 	janus_events_deinit();
 	if(eventhandlers != NULL && g_hash_table_size(eventhandlers) > 0) {
 		g_hash_table_foreach(eventhandlers, janus_eventhandler_close, NULL);
-		g_hash_table_destroy(eventhandlers);
+		g_clear_pointer(&eventhandlers, g_hash_table_destroy);
 	}
 	if(eventhandlers_so != NULL && g_hash_table_size(eventhandlers_so) > 0) {
 		g_hash_table_foreach(eventhandlers_so, janus_eventhandlerso_close, NULL);
-		g_hash_table_destroy(eventhandlers_so);
+		g_clear_pointer(&eventhandlers_so, g_hash_table_destroy);
 	}
 
 	janus_recorder_deinit();
@@ -5960,7 +6022,7 @@ gint main(int argc, char *argv[]) {
 		g_list_free(public_ips);
 	}
 	if (public_ips_table) {
-		g_hash_table_destroy(public_ips_table);
+		g_clear_pointer(&public_ips_table, g_hash_table_destroy);
 	}
 
 	if(janus_ice_get_static_event_loops() > 0)

@@ -55,6 +55,8 @@ int janus_pp_av1_create(char *destination, char *metadata, gboolean faststart, c
 		return -1;
 	}
 
+	fctx->url = g_strdup(destination);
+
 	vStream = janus_pp_new_video_avstream(fctx, AV_CODEC_ID_AV1, max_width, max_height);
 	if(vStream == NULL) {
 		JANUS_LOG(LOG_ERR, "Error adding stream\n");
@@ -258,6 +260,10 @@ int janus_pp_av1_preprocess(FILE *file, janus_pp_frame_packet *list, json_t *inf
 				/* Then the OBU size (leb128) */
 				size_t read = 0;
 				obusize = janus_pp_av1_lev128_decode((uint8_t *)payload, len, &read);
+				if(obusize == 0) {
+					JANUS_LOG(LOG_WARN, "  -- OBU size is 0, something's broken\n");
+					break;
+				}
 				JANUS_LOG(LOG_HUGE, "  -- OBU size: %"SCNu32"/%d (in %zu leb128 bytes)\n", obusize, len, read);
 				payload += read;
 				len -= read;
@@ -413,6 +419,10 @@ int janus_pp_av1_process(FILE *file, janus_pp_frame_packet *list, int *working) 
 					/* Read the OBU size (leb128) */
 					size_t read = 0;
 					obusize = janus_pp_av1_lev128_decode((uint8_t *)buffer, len, &read);
+					if(obusize == 0) {
+						JANUS_LOG(LOG_WARN, "  -- OBU size is 0, something's broken\n");
+						break;
+					}
 					buffer += read;
 					len -= read;
 				} else {
@@ -518,6 +528,8 @@ void janus_pp_av1_close(void) {
 	if(fctx != NULL) {
 		av_write_trailer(fctx);
 		avio_close(fctx->pb);
+		g_free(fctx->url);
+		fctx->url = NULL;
 		avformat_free_context(fctx);
 	}
 }

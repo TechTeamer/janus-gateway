@@ -513,7 +513,7 @@ int janus_pp_h265_process(FILE *file, janus_pp_frame_packet *list, int *working)
 			memcpy(&unit, buffer, sizeof(uint16_t));
 			unit = ntohs(unit);
 			uint8_t type = (unit & 0x7E00) >> 9;
-			if(type == 32 || type == 33 || type == 34) {
+			if(type == 32 || type == 33 || type == 34 || type == 1) {
 				if(type == 32 || type == 33) {
 					keyFrame = 1;
 					if(!keyframe_found) {
@@ -632,7 +632,7 @@ int janus_pp_h265_process(FILE *file, janus_pp_frame_packet *list, int *working)
 
 /* Close MP4 file */
 void janus_pp_h265_close(void) {
-	if(fctx != NULL)
+	if(fctx != NULL) {
 		av_write_trailer(fctx);
 #ifdef USE_CODECPAR
 	if(vEncoder != NULL)
@@ -641,17 +641,7 @@ void janus_pp_h265_close(void) {
 	if(vStream != NULL && vStream->codec != NULL)
 		avcodec_close(vStream->codec);
 #endif
-	if(fctx != NULL && fctx->streams[0] != NULL) {
-#ifndef USE_CODECPAR
-		av_free(fctx->streams[0]->codec);
-#endif
-		av_free(fctx->streams[0]);
-	}
-	if(fctx != NULL) {
 		avio_close(fctx->pb);
-#if LIBAVFORMAT_VER_AT_LEAST(58, 7)
-		g_free(fctx->url);
-#endif
-		av_free(fctx);
+		avformat_free_context(fctx);
 	}
 }

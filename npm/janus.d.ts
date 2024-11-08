@@ -121,6 +121,10 @@ declare namespace JanusJS {
 		error?: (error: string) => void;
 	}
 
+	interface RemoteTrackMetadata {
+		reason: "created" | "ended" | "mute" | "unmute";
+	}
+
 	enum MessageType {
 		Recording = 'recording',
 		Starting = 'starting',
@@ -152,7 +156,7 @@ declare namespace JanusJS {
 		slowLink?: (uplink: boolean, lost: number, mid: string) => void;
 		onmessage?: (message: Message, jsep?: JSEP) => void;
 		onlocaltrack?: (track: MediaStreamTrack, on: boolean) => void;
-		onremotetrack?: (track: MediaStreamTrack, mid: string, on: boolean) => void;
+		onremotetrack?: (track: MediaStreamTrack, mid: string, on: boolean, metadata?: RemoteTrackMetadata) => void;
 		ondataopen?: Function;
 		ondata?: Function;
 		oncleanup?: Function;
@@ -167,6 +171,15 @@ declare namespace JanusJS {
 	}
 
 	interface OfferParams {
+		tracks?: TrackOption[];
+		trickle?: boolean;
+		iceRestart?: boolean;
+		externalEncryption?: boolean;
+		success?: (jsep: JSEP) => void;
+		error?: (error: Error) => void;
+		customizeSdp?: (jsep: JSEP) => void;
+
+		/** @deprecated use tracks instead */
 		media?: {
 			audioSend?: boolean;
 			audioRecv?: boolean;
@@ -187,10 +200,6 @@ declare namespace JanusJS {
 			failIfNoVideo?: boolean;
 			screenshareFrameRate?: number;
 		};
-		trickle?: boolean;
-		stream?: MediaStream;
-		success: Function;
-		error: (error: any) => void;
 	}
 
 	interface PluginMessage {
@@ -242,14 +251,19 @@ declare namespace JanusJS {
 			timer: number;
 		};
 
-		sdpSent: boolean,
-		insertableStreams?: any,
-		candidates: RTCIceCandidateInit[],
+		sdpSent: boolean;
+		insertableStreams?: boolean;
+		externalEncryption?: boolean;
+		candidates: RTCIceCandidateInit[];
 	}
 
 	type PluginCreateAnswerParam = {
 		jsep: JSEP;
-		media: { audioSend: any, videoSend: any };
+		tracks?: TrackOption[];
+		externalEncryption?: boolean;
+
+		/** @deprecated use tracks instead */
+		media?: { audioSend: any, videoSend: any };
 		success?: (data: JSEP) => void;
 		error?: (error: string) => void;
 	}
@@ -267,27 +281,27 @@ declare namespace JanusJS {
 	}
 
 	type TrackOption = {
-		add: boolean;
-		replace: boolean;
-		remove: boolean;
+		add?: boolean;
+		replace?: boolean;
+		remove?: boolean;
 		type: 'video' | 'screen' | 'audio' | 'data';
-		mid: string;
+		mid?: string;
 		capture: boolean | MediaStreamTrack;
-		recv: boolean;
-		group: 'default' | string;
-		gumGroup: TrackOption['group'];
-		simulcast: boolean;
-		svc: string;
-		simulcastMaxBitrates: {
-			low: number,
-			medium: number,
-			high: number,
+		recv?: boolean;
+		group?: 'default' | string;
+		gumGroup?: TrackOption['group'];
+		simulcast?: boolean;
+		svc?: string;
+		simulcastMaxBitrates?: {
+			low: number;
+			medium: number;
+			high: number;
 		};
-		sendEncodings: RTCRtpEncodingParameters;
-		framerate: number;
-		bitrate: number;
-		dontStop: boolean;
-		transforms: {
+		sendEncodings?: RTCRtpEncodingParameters[];
+		framerate?: number;
+		bitrate?: number;
+		dontStop?: boolean;
+		transforms?: {
 			sender: ReadableWritablePair;
 			receiver: ReadableWritablePair;
 		};
@@ -306,6 +320,11 @@ declare namespace JanusJS {
 	}
 
 	type PluginDataParam = {
+		/** @deprecated use data instead */
+		text?: string;
+		data?: any;
+		label?: string;
+		protocol?: string;
 		success?: (data: unknown) => void;
 		error?: (error: string) => void;
 	}
@@ -340,7 +359,7 @@ declare namespace JanusJS {
 		isVideoMuted(): boolean;
 		muteVideo(): void;
 		unmuteVideo(): void;
-		getBitrate(): string;
+		getBitrate(mid? :string): string;
 		setMaxBitrate(bitrate: number): void;
 		send(message: PluginMessage): void;
 		data(params: PluginDataParam): void;
