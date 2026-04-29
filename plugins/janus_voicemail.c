@@ -16,7 +16,7 @@
  * down and returns an URL to the recorded file.
  *
  * Since an URL is returned, the plugin allows you to configure where the
- * recordings whould be stored (e.g., a folder in your web server, writable
+ * recordings would be stored (e.g., a folder in your web server, writable
  * by the plugin) and the base path to use when returning URLs (e.g.,
  * /my/recordings/ or http://www.example.com/my/recordings).
  *
@@ -352,7 +352,7 @@ int janus_voicemail_init(janus_callbacks *callback, const char *config_path) {
 		int res = janus_mkdir(recordings_path, 0755);
 		JANUS_LOG(LOG_VERB, "Creating folder: %d\n", res);
 		if(res != 0) {
-			JANUS_LOG(LOG_ERR, "%s", g_strerror(errno));
+			JANUS_LOG(LOG_ERR, "%s\n", g_strerror(errno));
 			return -1;	/* No point going on... */
 		}
 	}

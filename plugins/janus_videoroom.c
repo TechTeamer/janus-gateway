@@ -568,8 +568,8 @@ room-<unique room ID>: {
 	"record" : <true|false, whether this publisher should be recorded or not; optional>,
 	"filename" : "<if recording, the base path/file to use for the recording files; optional>",
 	"display" : "<new display name to use in the room; optional>",
-	"audio_level_average" : "<if provided, overrided the room audio_level_average for this user; optional>",
-	"audio_active_packets" : "<if provided, overrided the room audio_active_packets for this user; optional>"
+	"audio_level_average" : "<if provided, overrides the room audio_level_average for this user; optional>",
+	"audio_active_packets" : "<if provided, overrides the room audio_active_packets for this user; optional>"
 }
 \endverbatim
  *
@@ -940,7 +940,8 @@ room-<unique room ID>: {
 {
 	"videoroom" : "event",
 	"room" : <room ID>,
-	"leaving : <unique ID of the participant who left>
+	"leaving : <unique ID of the participant who left>,
+	"display" : "<display name of the leaving participant, if any>"
 }
 \endverbatim
  *
@@ -1702,6 +1703,7 @@ typedef struct janus_videoroom_publisher {
 	gint64 fir_latest;	/* Time of latest sent FIR (to avoid flooding) */
 	gint fir_seq;		/* FIR sequence number */
 	volatile gint need_pli;		/* Whether we need to send a PLI later */
+	volatile gint sending_pli;	/* Whether we're currently sending a PLI */
 	gboolean recording_active;	/* Whether this publisher has to be recorded or not */
 	gchar *recording_base;	/* Base name for the recording (e.g., /path/to/filename, will generate /path/to/filename-audio.mjr and/or /path/to/filename-video.mjr) */
 	janus_recorder *arc;	/* The Janus recorder instance for this publisher's audio, if enabled */
@@ -1856,7 +1858,9 @@ static void janus_videoroom_publisher_free(const janus_refcount *p_ref) {
 	p->srtp_contexts = NULL;
 	g_slist_free(p->subscribers);
 
+	janus_mutex_destroy(&p->rec_mutex);
 	janus_mutex_destroy(&p->subscribers_mutex);
+	janus_mutex_destroy(&p->own_subscriptions_mutex);
 	janus_mutex_destroy(&p->rtp_forwarders_mutex);
 	g_free(p);
 }
@@ -1897,6 +1901,7 @@ static void janus_videoroom_room_free(const janus_refcount *room_ref) {
 	g_hash_table_destroy(room->participants);
 	g_hash_table_destroy(room->private_ids);
 	g_hash_table_destroy(room->allowed);
+	janus_mutex_destroy(&room->mutex);
 	g_free(room);
 }
 
@@ -1968,19 +1973,23 @@ static void janus_videoroom_codecstr(janus_videoroom *videoroom, char *audio_cod
 static void janus_videoroom_reqpli(janus_videoroom_publisher *publisher, const char *reason) {
 	if(publisher == NULL || g_atomic_int_get(&publisher->destroyed))
 		return;
+	if(!g_atomic_int_compare_and_exchange(&publisher->sending_pli, 0, 1))
+		return;
 	gint64 now = janus_get_monotonic_time();
-	if(now - publisher->fir_latest < 100000) {
-		/* We just sent a PLI less than 100ms ago, schedule a new delivery later */
+	if(now - publisher->fir_latest < G_USEC_PER_SEC) {
+		/* We just sent a PLI less than a second ago, schedule a new delivery later */
 		g_atomic_int_set(&publisher->need_pli, 1);
+		g_atomic_int_set(&publisher->sending_pli, 0);
 		return;
 	}
 	/* Send a PLI */
 	JANUS_LOG(LOG_VERB, "%s sending PLI to %s (%s)\n", reason,
 		publisher->user_id_str, publisher->display ? publisher->display : "??");
+	g_atomic_int_set(&publisher->need_pli, 0);
+	publisher->fir_latest =  janus_get_monotonic_time();
 	gateway->send_pli(publisher->session->handle);
 	/* Update the time of when we last sent a keyframe request */
-	publisher->fir_latest = now;
-	g_atomic_int_set(&publisher->need_pli, 0);
+	g_atomic_int_set(&publisher->sending_pli, 0);
 }
 
 /* Error codes */
@@ -2594,6 +2603,7 @@ int janus_videoroom_init(janus_callbacks *callback, const char *config_path) {
 			}
 			cl = cl->next;
 		}
+		g_list_free(clist);
 		/* Done: we keep the configuration file open in case we get a "create" or "destroy" with permanent=true */
 	}
 
@@ -2636,7 +2646,6 @@ int janus_videoroom_init(janus_callbacks *callback, const char *config_path) {
 	}
 	if(fd > 0)
 		close(fd);
-	ipv6_disabled = TRUE;
 	if(ipv6_disabled) {
 		JANUS_LOG(LOG_WARN, "IPv6 disabled, will only create VideoRoom forwarders to IPv4 addresses\n");
 	}
@@ -2857,6 +2866,8 @@ static void janus_videoroom_leave_or_unpublish(janus_videoroom_publisher *partic
 	json_t *event = json_object();
 	json_object_set_new(event, "videoroom", json_string("event"));
 	json_object_set_new(event, "room", string_ids ? json_string(participant->room_id_str) : json_integer(participant->room_id));
+	if(participant->display)
+		json_object_set_new(event, "display", json_string(participant->display));
 	json_object_set_new(event, is_leaving ? (kicked ? "kicked" : "leaving") : "unpublished",
 		string_ids ? json_string(participant->user_id_str) : json_integer(participant->user_id));
 	janus_videoroom_notify_participants(participant, event, FALSE);
@@ -2866,6 +2877,8 @@ static void janus_videoroom_leave_or_unpublish(janus_videoroom_publisher *partic
 		json_object_set_new(info, "event", json_string(is_leaving ? (kicked ? "kicked" : "leaving") : "unpublished"));
 		json_object_set_new(info, "room", string_ids ? json_string(participant->room_id_str) : json_integer(participant->room_id));
 		json_object_set_new(info, "id", string_ids ? json_string(participant->user_id_str) : json_integer(participant->user_id));
+		if(participant->display)
+			json_object_set_new(info, "display", json_string(participant->display));
 		gateway->notify_event(&janus_videoroom_plugin, NULL, info);
 	}
 	if(is_leaving) {
@@ -5445,6 +5458,11 @@ void janus_videoroom_setup_media(janus_plugin_session *handle) {
 		 * now subscribe; if this is a subscriber, instead, ask the publisher a FIR */
 		if(session->participant_type == janus_videoroom_p_type_publisher) {
 			janus_videoroom_publisher *participant = janus_videoroom_session_get_publisher(session);
+			if(participant == NULL) {
+				/* No publisher instance? Shouldn't happen at this stage */
+				janus_refcount_decrease(&session->ref);
+				return;
+			}
 			/* Notify all other participants that there's a new boy in town */
 			json_t *list = json_array();
 			json_t *pl = json_object();
@@ -6002,6 +6020,7 @@ void janus_videoroom_slow_link(janus_plugin_session *handle, int uplink, int vid
 			json_object_set_new(event, "videoroom", json_string("slow_link"));
 			gateway->push_event(session->handle, &janus_videoroom_plugin, NULL, event, NULL);
 			json_decref(event);
+			janus_refcount_decrease(&subscriber->ref);
 		} else {
 			JANUS_LOG(LOG_WARN, "Got a slow downlink on a VideoRoom viewer? Weird, because it doesn't send media...\n");
 		}
@@ -6185,6 +6204,11 @@ static void janus_videoroom_hangup_media_internal(gpointer session_data) {
 	if(session->participant_type == janus_videoroom_p_type_publisher) {
 		/* This publisher just 'unpublished' */
 		janus_videoroom_publisher *participant = janus_videoroom_session_get_publisher(session);
+		if(participant == NULL) {
+			/* No publisher instance? Shouldn't happen at this stage */
+			janus_refcount_decrease(&session->ref);
+			return;
+		}
 		/* Get rid of the recorders, if available */
 		janus_mutex_lock(&participant->rec_mutex);
 		g_free(participant->recording_base);
@@ -6753,6 +6777,15 @@ static void *janus_videoroom_handler(void *data) {
 					error_code, error_cause, TRUE,
 					JANUS_VIDEOROOM_ERROR_MISSING_ELEMENT, JANUS_VIDEOROOM_ERROR_INVALID_ELEMENT);
 				if(error_code != 0) {
+					janus_mutex_unlock(&videoroom->mutex);
+					janus_refcount_decrease(&videoroom->ref);
+					goto error;
+				}
+				/* Make sure there's no SDP attached here */
+				if(json_string_value(json_object_get(msg->jsep, "sdp")) != NULL) {
+					JANUS_LOG(LOG_ERR, "Can't send an offer to create subscribers\n");
+					error_code = JANUS_VIDEOROOM_ERROR_INVALID_REQUEST;
+					g_snprintf(error_cause, 512, "Can't send an offer to create subscribers");
 					janus_mutex_unlock(&videoroom->mutex);
 					janus_refcount_decrease(&videoroom->ref);
 					goto error;
@@ -8557,8 +8590,7 @@ static void janus_videoroom_relay_rtp_packet(gpointer data, gpointer user_data) 
 			if(subscriber->sim_context.need_pli && subscriber->feed && subscriber->feed->session &&
 					subscriber->feed->session->handle) {
 				/* Send a PLI */
-				JANUS_LOG(LOG_VERB, "We need a PLI for the simulcast context\n");
-				gateway->send_pli(subscriber->feed->session->handle);
+				janus_videoroom_reqpli(subscriber->feed, "Simulcast context");
 			}
 			/* Do we need to drop this? */
 			if(!relay)
@@ -8585,7 +8617,7 @@ static void janus_videoroom_relay_rtp_packet(gpointer data, gpointer user_data) 
 			/* If we got here, update the RTP header and send the packet */
 			janus_rtp_header_update(packet->data, &subscriber->context, TRUE, 0);
 			char vp8pd[6];
-			if(subscriber->feed && subscriber->feed->vcodec == JANUS_VIDEOCODEC_VP8) {
+			if(subscriber->feed && subscriber->feed->vcodec == JANUS_VIDEOCODEC_VP8 && plen >= (int)sizeof(vp8pd)) {
 				/* For VP8, we save the original payload descriptor, to restore it after */
 				memcpy(vp8pd, payload, sizeof(vp8pd));
 				janus_vp8_simulcast_descriptor_update(payload, plen, &subscriber->vp8_context,
@@ -8604,7 +8636,7 @@ static void janus_videoroom_relay_rtp_packet(gpointer data, gpointer user_data) 
 			/* Restore the timestamp and sequence number to what the publisher set them to */
 			packet->data->timestamp = htonl(packet->timestamp);
 			packet->data->seq_number = htons(packet->seq_number);
-			if(subscriber->feed && subscriber->feed->vcodec == JANUS_VIDEOCODEC_VP8) {
+			if(subscriber->feed && subscriber->feed->vcodec == JANUS_VIDEOCODEC_VP8 && plen >= (int)sizeof(vp8pd)) {
 				/* Restore the original payload descriptor as well, as it will be needed by the next viewer */
 				memcpy(payload, vp8pd, sizeof(vp8pd));
 			}

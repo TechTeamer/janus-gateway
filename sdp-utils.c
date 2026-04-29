@@ -259,346 +259,349 @@ janus_sdp *janus_sdp_parse(const char *sdp, char *error, size_t errlen) {
 	gboolean success = TRUE;
 	janus_sdp_mline *mline = NULL;
 
-	gchar **parts = g_strsplit(sdp, "\n", -1);
-	if(parts) {
-		int index = 0;
-		char *line = NULL, *cr = NULL;
-		while(success && (line = parts[index]) != NULL) {
-			cr = strchr(line, '\r');
+	int index = 0;
+	char *line = NULL, *cr = NULL, *rest = NULL;
+	char *sdp_copy = g_strdup(sdp);
+	gboolean first = TRUE, mline_ended = FALSE;
+	/* When a m-line has been detected we re-use the previous SDP line */
+	while(success && (mline_ended || (line = strtok_r(!first ? NULL: sdp_copy, "\n", &rest)) != NULL)) {
+		first = FALSE;
+		mline_ended = FALSE;
+		cr = strchr(line, '\r');
+		if(cr != NULL)
+			*cr = '\0';
+		if(*line == '\0') {
 			if(cr != NULL)
-				*cr = '\0';
-			if(*line == '\0') {
-				if(cr != NULL)
-					*cr = '\r';
-				index++;
-				continue;
-			}
-			if(strnlen(line, 3) < 3) {
-				if(error)
-					g_snprintf(error, errlen, "Invalid line (%zu bytes): %s", strlen(line), line);
-				success = FALSE;
-				break;
-			}
-			if(*(line+1) != '=') {
-				if(error)
-					g_snprintf(error, errlen, "Invalid line (2nd char is not '='): %s", line);
-				success = FALSE;
-				break;
-			}
-			char c = *line;
-			if(mline == NULL) {
-				/* Global stuff */
-				switch(c) {
-					case 'v': {
-						if(sscanf(line, "v=%d", &imported->version) != 1) {
-							if(error)
-								g_snprintf(error, errlen, "Invalid v= line: %s", line);
-							success = FALSE;
-							break;
-						}
+				*cr = '\r';
+			index++;
+			continue;
+		}
+		if(strnlen(line, 3) < 3) {
+			if(error)
+				g_snprintf(error, errlen, "Invalid line (%zu bytes): %s", strlen(line), line);
+			success = FALSE;
+			break;
+		}
+		if(*(line+1) != '=') {
+			if(error)
+				g_snprintf(error, errlen, "Invalid line (2nd char is not '='): %s", line);
+			success = FALSE;
+			break;
+		}
+		char c = *line;
+		if(mline == NULL) {
+			/* Global stuff */
+			switch(c) {
+				case 'v': {
+					if(sscanf(line, "v=%d", &imported->version) != 1) {
+						if(error)
+							g_snprintf(error, errlen, "Invalid v= line: %s", line);
+						success = FALSE;
 						break;
 					}
-					case 'o': {
-						if(imported->o_name || imported->o_addr) {
-							if(error)
-								g_snprintf(error, errlen, "Multiple o= lines: %s", line);
-							success = FALSE;
-							break;
-						}
-						char name[256], addrtype[6], addr[256];
-						if(sscanf(line, "o=%255s %"SCNu64" %"SCNu64" IN %5s %255s",
-								name, &imported->o_sessid, &imported->o_version, addrtype, addr) != 5) {
-							if(error)
-								g_snprintf(error, errlen, "Invalid o= line: %s", line);
-							success = FALSE;
-							break;
-						}
-						if(!strcasecmp(addrtype, "IP4"))
-							imported->o_ipv4 = TRUE;
-						else if(!strcasecmp(addrtype, "IP6"))
-							imported->o_ipv4 = FALSE;
-						else {
-							if(error)
-								g_snprintf(error, errlen, "Invalid o= line (unsupported protocol %s): %s", addrtype, line);
-							success = FALSE;
-							break;
-						}
-						imported->o_name = g_strdup(name);
-						imported->o_addr = g_strdup(addr);
+					break;
+				}
+				case 'o': {
+					if(imported->o_name || imported->o_addr) {
+						if(error)
+							g_snprintf(error, errlen, "Multiple o= lines: %s", line);
+						success = FALSE;
 						break;
 					}
-					case 's': {
-						if(imported->s_name) {
-							if(error)
-								g_snprintf(error, errlen, "Multiple s= lines: %s", line);
-							success = FALSE;
-							break;
-						}
-						imported->s_name = g_strdup(line+2);
+					char name[256], addrtype[6], addr[256];
+					if(sscanf(line, "o=%255s %"SCNu64" %"SCNu64" IN %5s %255s",
+							name, &imported->o_sessid, &imported->o_version, addrtype, addr) != 5) {
+						if(error)
+							g_snprintf(error, errlen, "Invalid o= line: %s", line);
+						success = FALSE;
 						break;
 					}
-					case 't': {
-						if(sscanf(line, "t=%"SCNu64" %"SCNu64, &imported->t_start, &imported->t_stop) != 2) {
-							if(error)
-								g_snprintf(error, errlen, "Invalid t= line: %s", line);
-							success = FALSE;
-							break;
-						}
+					if(!strcasecmp(addrtype, "IP4"))
+						imported->o_ipv4 = TRUE;
+					else if(!strcasecmp(addrtype, "IP6"))
+						imported->o_ipv4 = FALSE;
+					else {
+						if(error)
+							g_snprintf(error, errlen, "Invalid o= line (unsupported protocol %s): %s", addrtype, line);
+						success = FALSE;
 						break;
 					}
-					case 'c': {
-						if(imported->c_addr) {
-							if(error)
-								g_snprintf(error, errlen, "Multiple global c= lines: %s", line);
-							success = FALSE;
-							break;
-						}
-						char addrtype[6], addr[256];
-						if(sscanf(line, "c=IN %5s %255s", addrtype, addr) != 2) {
-							if(error)
-								g_snprintf(error, errlen, "Invalid c= line: %s", line);
-							success = FALSE;
-							break;
-						}
-						if(!strcasecmp(addrtype, "IP4"))
-							imported->c_ipv4 = TRUE;
-						else if(!strcasecmp(addrtype, "IP6"))
-							imported->c_ipv4 = FALSE;
-						else {
-							if(error)
-								g_snprintf(error, errlen, "Invalid c= line (unsupported protocol %s): %s", addrtype, line);
-							success = FALSE;
-							break;
-						}
-						imported->c_addr = g_strdup(addr);
+					imported->o_name = g_strdup(name);
+					imported->o_addr = g_strdup(addr);
+					break;
+				}
+				case 's': {
+					if(imported->s_name) {
+						if(error)
+							g_snprintf(error, errlen, "Multiple s= lines: %s", line);
+						success = FALSE;
 						break;
 					}
-					case 'a': {
-						janus_sdp_attribute *a = g_malloc0(sizeof(janus_sdp_attribute));
-						janus_refcount_init(&a->ref, janus_sdp_attribute_free);
-						line += 2;
-						char *semicolon = strchr(line, ':');
-						if(semicolon == NULL) {
-							a->name = g_strdup(line);
-							a->value = NULL;
-						} else {
-							if(*(semicolon+1) == '\0') {
-								janus_sdp_attribute_destroy(a);
-								if(error)
-									g_snprintf(error, errlen, "Invalid a= line: %s", line);
-								success = FALSE;
-								break;
+					imported->s_name = g_strdup(line+2);
+					break;
+				}
+				case 't': {
+					if(sscanf(line, "t=%"SCNu64" %"SCNu64, &imported->t_start, &imported->t_stop) != 2) {
+						if(error)
+							g_snprintf(error, errlen, "Invalid t= line: %s", line);
+						success = FALSE;
+						break;
+					}
+					break;
+				}
+				case 'c': {
+					if(imported->c_addr) {
+						if(error)
+							g_snprintf(error, errlen, "Multiple global c= lines: %s", line);
+						success = FALSE;
+						break;
+					}
+					char addrtype[6], addr[256];
+					if(sscanf(line, "c=IN %5s %255s", addrtype, addr) != 2) {
+						if(error)
+							g_snprintf(error, errlen, "Invalid c= line: %s", line);
+						success = FALSE;
+						break;
+					}
+					if(!strcasecmp(addrtype, "IP4"))
+						imported->c_ipv4 = TRUE;
+					else if(!strcasecmp(addrtype, "IP6"))
+						imported->c_ipv4 = FALSE;
+					else {
+						if(error)
+							g_snprintf(error, errlen, "Invalid c= line (unsupported protocol %s): %s", addrtype, line);
+						success = FALSE;
+						break;
+					}
+					imported->c_addr = g_strdup(addr);
+					break;
+				}
+				case 'a': {
+					janus_sdp_attribute *a = g_malloc0(sizeof(janus_sdp_attribute));
+					janus_refcount_init(&a->ref, janus_sdp_attribute_free);
+					line += 2;
+					char *semicolon = strchr(line, ':');
+					if(semicolon == NULL) {
+						a->name = g_strdup(line);
+						a->value = NULL;
+					} else {
+						if(*(semicolon+1) == '\0') {
+							janus_sdp_attribute_destroy(a);
+							if(error)
+								g_snprintf(error, errlen, "Invalid a= line: %s", line);
+							success = FALSE;
+							break;
+						}
+						*semicolon = '\0';
+						a->name = g_strdup(line);
+						a->value = g_strdup(semicolon+1);
+						a->direction = JANUS_SDP_DEFAULT;
+						*semicolon = ':';
+						if(strstr(line, "/sendonly"))
+							a->direction = JANUS_SDP_SENDONLY;
+						else if(strstr(line, "/recvonly"))
+							a->direction = JANUS_SDP_RECVONLY;
+						if(strstr(line, "/inactive"))
+							a->direction = JANUS_SDP_INACTIVE;
+					}
+					imported->attributes = g_list_prepend(imported->attributes, a);
+					break;
+				}
+				case 'm': {
+					janus_sdp_mline *m = g_malloc0(sizeof(janus_sdp_mline));
+					g_atomic_int_set(&m->destroyed, 0);
+					janus_refcount_init(&m->ref, janus_sdp_mline_free);
+					/* Start with media type, port and protocol */
+					char type[32];
+					char proto[64];
+					if(strnlen(line, 200 + 1) > 200) {
+						janus_sdp_mline_destroy(m);
+						if(error)
+							g_snprintf(error, errlen, "Invalid m= line (too long): %zu", strlen(line));
+						success = FALSE;
+						break;
+					}
+					if(sscanf(line, "m=%31s %"SCNu16" %63s %*s", type, &m->port, proto) != 3) {
+						janus_sdp_mline_destroy(m);
+						if(error)
+							g_snprintf(error, errlen, "Invalid m= line: %s", line);
+						success = FALSE;
+						break;
+					}
+					m->type = janus_sdp_parse_mtype(type);
+					if(m->type == JANUS_SDP_OTHER) {
+						janus_sdp_mline_destroy(m);
+						if(error)
+							g_snprintf(error, errlen, "Invalid m= line: %s", line);
+						success = FALSE;
+						break;
+					}
+					m->type_str = g_strdup(type);
+					m->proto = g_strdup(proto);
+					m->direction = JANUS_SDP_SENDRECV;
+					m->c_ipv4 = TRUE;
+					/* Now let's check the payload types/formats */
+					gchar **mline_parts = g_strsplit(line+2, " ", -1);
+					if(!mline_parts && (m->port > 0 || m->type == JANUS_SDP_APPLICATION)) {
+						janus_sdp_mline_destroy(m);
+						if(error)
+							g_snprintf(error, errlen, "Invalid m= line (no payload types/formats): %s", line);
+						success = FALSE;
+						break;
+					} else {
+						int mindex = 0;
+						while(mline_parts[mindex]) {
+							if(mindex < 3) {
+								/* We've parsed these before */
+								mindex++;
+								continue;
 							}
-							*semicolon = '\0';
-							a->name = g_strdup(line);
-							a->value = g_strdup(semicolon+1);
-							a->direction = JANUS_SDP_DEFAULT;
-							*semicolon = ':';
-							if(strstr(line, "/sendonly"))
-								a->direction = JANUS_SDP_SENDONLY;
-							else if(strstr(line, "/recvonly"))
-								a->direction = JANUS_SDP_RECVONLY;
-							if(strstr(line, "/inactive"))
-								a->direction = JANUS_SDP_INACTIVE;
+							/* Add string fmt */
+							m->fmts = g_list_prepend(m->fmts, g_strdup(mline_parts[mindex]));
+							/* Add numeric payload type */
+							int ptype = atoi(mline_parts[mindex]);
+							if(ptype < 0) {
+								JANUS_LOG(LOG_ERR, "Invalid payload type (%s)\n", mline_parts[mindex]);
+							} else {
+								m->ptypes = g_list_prepend(m->ptypes, GINT_TO_POINTER(ptype));
+							}
+							mindex++;
 						}
-						imported->attributes = g_list_prepend(imported->attributes, a);
-						break;
-					}
-					case 'm': {
-						janus_sdp_mline *m = g_malloc0(sizeof(janus_sdp_mline));
-						g_atomic_int_set(&m->destroyed, 0);
-						janus_refcount_init(&m->ref, janus_sdp_mline_free);
-						/* Start with media type, port and protocol */
-						char type[32];
-						char proto[64];
-						if(strnlen(line, 200 + 1) > 200) {
-							janus_sdp_mline_destroy(m);
-							if(error)
-								g_snprintf(error, errlen, "Invalid m= line (too long): %zu", strlen(line));
-							success = FALSE;
-							break;
-						}
-						if(sscanf(line, "m=%31s %"SCNu16" %63s %*s", type, &m->port, proto) != 3) {
-							janus_sdp_mline_destroy(m);
-							if(error)
-								g_snprintf(error, errlen, "Invalid m= line: %s", line);
-							success = FALSE;
-							break;
-						}
-						m->type = janus_sdp_parse_mtype(type);
-						if(m->type == JANUS_SDP_OTHER) {
-							janus_sdp_mline_destroy(m);
-							if(error)
-								g_snprintf(error, errlen, "Invalid m= line: %s", line);
-							success = FALSE;
-							break;
-						}
-						m->type_str = g_strdup(type);
-						m->proto = g_strdup(proto);
-						m->direction = JANUS_SDP_SENDRECV;
-						m->c_ipv4 = TRUE;
-						/* Now let's check the payload types/formats */
-						gchar **mline_parts = g_strsplit(line+2, " ", -1);
-						if(!mline_parts && (m->port > 0 || m->type == JANUS_SDP_APPLICATION)) {
+						g_strfreev(mline_parts);
+						if(m->fmts == NULL || m->ptypes == NULL) {
 							janus_sdp_mline_destroy(m);
 							if(error)
 								g_snprintf(error, errlen, "Invalid m= line (no payload types/formats): %s", line);
 							success = FALSE;
 							break;
-						} else {
-							int mindex = 0;
-							while(mline_parts[mindex]) {
-								if(mindex < 3) {
-									/* We've parsed these before */
-									mindex++;
-									continue;
-								}
-								/* Add string fmt */
-								m->fmts = g_list_prepend(m->fmts, g_strdup(mline_parts[mindex]));
-								/* Add numeric payload type */
-								int ptype = atoi(mline_parts[mindex]);
-								if(ptype < 0) {
-									JANUS_LOG(LOG_ERR, "Invalid payload type (%s)\n", mline_parts[mindex]);
-								} else {
-									m->ptypes = g_list_prepend(m->ptypes, GINT_TO_POINTER(ptype));
-								}
-								mindex++;
-							}
-							g_strfreev(mline_parts);
-							if(m->fmts == NULL || m->ptypes == NULL) {
-								janus_sdp_mline_destroy(m);
-								if(error)
-									g_snprintf(error, errlen, "Invalid m= line (no payload types/formats): %s", line);
-								success = FALSE;
-								break;
-							}
-							m->fmts = g_list_reverse(m->fmts);
-							m->ptypes = g_list_reverse(m->ptypes);
 						}
-						/* Append to the list of m-lines */
-						imported->m_lines = g_list_prepend(imported->m_lines, m);
-						/* From now on, we parse this m-line */
-						mline = m;
-						break;
+						m->fmts = g_list_reverse(m->fmts);
+						m->ptypes = g_list_reverse(m->ptypes);
 					}
-					default:
-						JANUS_LOG(LOG_WARN, "Ignoring '%c' property\n", c);
-						break;
+					/* Append to the list of m-lines */
+					imported->m_lines = g_list_prepend(imported->m_lines, m);
+					/* From now on, we parse this m-line */
+					mline = m;
+					break;
 				}
-			} else {
-				/* m-line stuff */
-				switch(c) {
-					case 'c': {
-						if(mline->c_addr) {
-							if(error)
-								g_snprintf(error, errlen, "Multiple m-line c= lines: %s", line);
-							success = FALSE;
-							break;
-						}
-						char addrtype[6], addr[256];
-						if(sscanf(line, "c=IN %5s %255s", addrtype, addr) != 2) {
-							if(error)
-								g_snprintf(error, errlen, "Invalid c= line: %s", line);
-							success = FALSE;
-							break;
-						}
-						if(!strcasecmp(addrtype, "IP4"))
-							mline->c_ipv4 = TRUE;
-						else if(!strcasecmp(addrtype, "IP6"))
-							mline->c_ipv4 = FALSE;
-						else {
-							if(error)
-								g_snprintf(error, errlen, "Invalid c= line (unsupported protocol %s): %s", addrtype, line);
-							success = FALSE;
-							break;
-						}
-						mline->c_addr = g_strdup(addr);
+				default:
+					JANUS_LOG(LOG_WARN, "Ignoring '%c' property\n", c);
+					break;
+			}
+		} else {
+			/* m-line stuff */
+			switch(c) {
+				case 'c': {
+					if(mline->c_addr) {
+						if(error)
+							g_snprintf(error, errlen, "Multiple m-line c= lines: %s", line);
+						success = FALSE;
 						break;
 					}
-					case 'b': {
-						if(mline->b_name) {
-							JANUS_LOG(LOG_WARN, "Ignoring extra m-line b= line: %s\n", line);
-							if(cr != NULL)
-								*cr = '\r';
-							index++;
-							continue;
+					char addrtype[6], addr[256];
+					if(sscanf(line, "c=IN %5s %255s", addrtype, addr) != 2) {
+						if(error)
+							g_snprintf(error, errlen, "Invalid c= line: %s", line);
+						success = FALSE;
+						break;
+					}
+					if(!strcasecmp(addrtype, "IP4"))
+						mline->c_ipv4 = TRUE;
+					else if(!strcasecmp(addrtype, "IP6"))
+						mline->c_ipv4 = FALSE;
+					else {
+						if(error)
+							g_snprintf(error, errlen, "Invalid c= line (unsupported protocol %s): %s", addrtype, line);
+						success = FALSE;
+						break;
+					}
+					mline->c_addr = g_strdup(addr);
+					break;
+				}
+				case 'b': {
+					if(mline->b_name) {
+						JANUS_LOG(LOG_WARN, "Ignoring extra m-line b= line: %s\n", line);
+						if(cr != NULL)
+							*cr = '\r';
+						index++;
+						continue;
+					}
+					line += 2;
+					char *semicolon = strchr(line, ':');
+					if(semicolon == NULL || (*(semicolon+1) == '\0')) {
+						if(error)
+							g_snprintf(error, errlen, "Invalid b= line: %s", line);
+						success = FALSE;
+						break;
+					}
+					*semicolon = '\0';
+					if(strcmp(line, "AS") && strcmp(line, "TIAS")) {
+						/* We only support b=AS and b=TIAS, skip */
+						break;
+					}
+					mline->b_name = g_strdup(line);
+					mline->b_value = atol(semicolon+1);
+					*semicolon = ':';
+					break;
+				}
+				case 'a': {
+					janus_sdp_attribute *a = g_malloc0(sizeof(janus_sdp_attribute));
+					janus_refcount_init(&a->ref, janus_sdp_attribute_free);
+					line += 2;
+					char *semicolon = strchr(line, ':');
+					if(semicolon == NULL) {
+						/* Is this a media direction attribute? */
+						janus_sdp_mdirection direction = janus_sdp_parse_mdirection(line);
+						if(direction != JANUS_SDP_INVALID) {
+							janus_sdp_attribute_destroy(a);
+							mline->direction = direction;
+							break;
 						}
-						line += 2;
-						char *semicolon = strchr(line, ':');
-						if(semicolon == NULL || (*(semicolon+1) == '\0')) {
+						a->name = g_strdup(line);
+						a->value = NULL;
+					} else {
+						if(*(semicolon+1) == '\0') {
+							janus_sdp_attribute_destroy(a);
 							if(error)
-								g_snprintf(error, errlen, "Invalid b= line: %s", line);
+								g_snprintf(error, errlen, "Invalid a= line: %s", line);
 							success = FALSE;
 							break;
 						}
 						*semicolon = '\0';
-						if(strcmp(line, "AS") && strcmp(line, "TIAS")) {
-							/* We only support b=AS and b=TIAS, skip */
-							break;
-						}
-						mline->b_name = g_strdup(line);
-						mline->b_value = atol(semicolon+1);
+						a->name = g_strdup(line);
+						a->value = g_strdup(semicolon+1);
+						a->direction = JANUS_SDP_DEFAULT;
 						*semicolon = ':';
-						break;
+						if(strstr(line, "/sendonly"))
+							a->direction = JANUS_SDP_SENDONLY;
+						else if(strstr(line, "/recvonly"))
+							a->direction = JANUS_SDP_RECVONLY;
+						if(strstr(line, "/inactive"))
+							a->direction = JANUS_SDP_INACTIVE;
 					}
-					case 'a': {
-						janus_sdp_attribute *a = g_malloc0(sizeof(janus_sdp_attribute));
-						janus_refcount_init(&a->ref, janus_sdp_attribute_free);
-						line += 2;
-						char *semicolon = strchr(line, ':');
-						if(semicolon == NULL) {
-							/* Is this a media direction attribute? */
-							janus_sdp_mdirection direction = janus_sdp_parse_mdirection(line);
-							if(direction != JANUS_SDP_INVALID) {
-								janus_sdp_attribute_destroy(a);
-								mline->direction = direction;
-								break;
-							}
-							a->name = g_strdup(line);
-							a->value = NULL;
-						} else {
-							if(*(semicolon+1) == '\0') {
-								janus_sdp_attribute_destroy(a);
-								if(error)
-									g_snprintf(error, errlen, "Invalid a= line: %s", line);
-								success = FALSE;
-								break;
-							}
-							*semicolon = '\0';
-							a->name = g_strdup(line);
-							a->value = g_strdup(semicolon+1);
-							a->direction = JANUS_SDP_DEFAULT;
-							*semicolon = ':';
-							if(strstr(line, "/sendonly"))
-								a->direction = JANUS_SDP_SENDONLY;
-							else if(strstr(line, "/recvonly"))
-								a->direction = JANUS_SDP_RECVONLY;
-							if(strstr(line, "/inactive"))
-								a->direction = JANUS_SDP_INACTIVE;
-						}
-						mline->attributes = g_list_prepend(mline->attributes, a);
-						break;
-					}
-					case 'm': {
-						/* Current m-line ended, back to global parsing */
-						if(mline && mline->attributes)
-							mline->attributes = g_list_reverse(mline->attributes);
-						mline = NULL;
-						continue;
-					}
-					default:
-						JANUS_LOG(LOG_WARN, "Ignoring '%c' property (m-line)\n", c);
-						break;
+					mline->attributes = g_list_prepend(mline->attributes, a);
+					break;
 				}
+				case 'm': {
+					/* Current m-line ended, back to global parsing */
+					if(mline && mline->attributes)
+						mline->attributes = g_list_reverse(mline->attributes);
+					mline = NULL;
+					mline_ended = TRUE;
+					continue;
+				}
+				default:
+					JANUS_LOG(LOG_WARN, "Ignoring '%c' property (m-line)\n", c);
+					break;
 			}
-			if(cr != NULL)
-				*cr = '\r';
-			index++;
 		}
 		if(cr != NULL)
 			*cr = '\r';
-		g_strfreev(parts);
+		index++;
 	}
+	if(cr != NULL)
+		*cr = '\r';
+	g_free(sdp_copy);
 	/* FIXME Do a last check: is all the stuff that's supposed to be there available? */
 	if(success && (imported->o_name == NULL || imported->o_addr == NULL || imported->s_name == NULL || imported->m_lines == NULL)) {
 		success = FALSE;
@@ -736,6 +739,7 @@ int janus_sdp_get_codec_pt_full(janus_sdp *sdp, const char *codec, const char *p
 						pts = g_list_append(pts, GINT_TO_POINTER(pt));
 					} else {
 						/* Payload type for codec found */
+						g_list_free(pts);
 						return pt;
 					}
 				}
@@ -761,6 +765,7 @@ int janus_sdp_get_codec_pt_full(janus_sdp *sdp, const char *codec, const char *p
 						if(strstr(a->value, profile_id) != NULL) {
 							/* Found */
 							JANUS_LOG(LOG_VERB, "VP9 profile %s found --> %d\n", profile, pt);
+							g_list_free(pts);
 							return pt;
 						}
 					} else if(h264 && strstr(a->value, "packetization-mode=0") == NULL) {
@@ -772,6 +777,7 @@ int janus_sdp_get_codec_pt_full(janus_sdp *sdp, const char *codec, const char *p
 						if(strstr(a->value, profile_level_id) != NULL) {
 							/* Found */
 							JANUS_LOG(LOG_VERB, "H.264 profile %s found --> %d\n", profile, pt);
+							g_list_free(pts);
 							return pt;
 						}
 						/* Not found, try converting the profile to upper case */
@@ -781,6 +787,7 @@ int janus_sdp_get_codec_pt_full(janus_sdp *sdp, const char *codec, const char *p
 						if(strstr(a->value, profile_level_id) != NULL) {
 							/* Found */
 							JANUS_LOG(LOG_VERB, "H.264 profile %s found --> %d\n", profile, pt);
+							g_list_free(pts);
 							return pt;
 						}
 					}
@@ -788,8 +795,7 @@ int janus_sdp_get_codec_pt_full(janus_sdp *sdp, const char *codec, const char *p
 				ma = ma->next;
 			}
 		}
-		if(pts != NULL)
-			g_list_free(pts);
+		g_list_free(pts);
 		ml = ml->next;
 	}
 	return -1;
@@ -966,6 +972,8 @@ char *janus_sdp_write(janus_sdp *imported) {
 	janus_strlcat_fast(sdp, buffer, sdplen, &offset);
 	/* c= */
 	if(imported->c_addr != NULL) {
+		if(imported->c_ipv4 && imported->c_addr && strstr(imported->c_addr, ":"))
+			imported->c_ipv4 = FALSE;
 		g_snprintf(buffer, sizeof(buffer), "c=IN %s %s\r\n",
 			imported->c_ipv4 ? "IP4" : "IP6", imported->c_addr);
 		janus_strlcat_fast(sdp, buffer, sdplen, &offset);
@@ -1212,6 +1220,8 @@ janus_sdp *janus_sdp_generate_offer(const char *name, const char *address, ...) 
 	janus_sdp_mdirection audio_dir = JANUS_SDP_SENDRECV, video_dir = JANUS_SDP_SENDRECV;
 	GHashTable *audio_extmaps = NULL, *audio_extids = NULL,
 		*video_extmaps = NULL, *video_extids = NULL;
+	gboolean twcc_audio = FALSE, twcc_video = FALSE;
+
 	int property = va_arg(args, int);
 	while(property != JANUS_SDP_OA_DONE) {
 		if(property == JANUS_SDP_OA_AUDIO) {
@@ -1275,6 +1285,10 @@ janus_sdp *janus_sdp_generate_offer(const char *name, const char *address, ...) 
 						} else {
 							g_hash_table_insert(audio_extmaps, extmap, GINT_TO_POINTER(id));
 							g_hash_table_insert(audio_extids, GINT_TO_POINTER(id), extmap);
+							if(!strcasecmp(extmap, JANUS_RTP_EXTMAP_TRANSPORT_WIDE_CC)) {
+								/* Take note of the fact we may negotiate TWCC for audio */
+								twcc_audio = TRUE;
+							}
 						}
 					} else {
 						if(g_hash_table_lookup(video_extmaps, extmap) != NULL) {
@@ -1283,6 +1297,10 @@ janus_sdp *janus_sdp_generate_offer(const char *name, const char *address, ...) 
 						} else {
 							g_hash_table_insert(video_extmaps, extmap, GINT_TO_POINTER(id));
 							g_hash_table_insert(video_extids, GINT_TO_POINTER(id), extmap);
+							if(!strcasecmp(extmap, JANUS_RTP_EXTMAP_TRANSPORT_WIDE_CC)) {
+								/* Take note of the fact we may negotiate TWCC for video */
+								twcc_video = TRUE;
+							}
 						}
 					}
 				}
@@ -1363,6 +1381,11 @@ janus_sdp *janus_sdp_generate_offer(const char *name, const char *address, ...) 
 			janus_sdp_attribute *a = janus_sdp_attribute_create("fmtp", "%d %s", audio_pt, audio_fmtp);
 			m->attributes = g_list_append(m->attributes, a);
 		}
+		if(twcc_audio) {
+			/* Add the transport-wide RTCP feedback message here, since the header extension was negotiated */
+			a = janus_sdp_attribute_create("rtcp-fb", "%d transport-cc", audio_pt);
+			m->attributes = g_list_append(m->attributes, a);
+		}
 		/* Check if we need to add audio extensions to the SDP */
 		if(audio_extids != NULL) {
 			GList *ids = g_list_sort(g_hash_table_get_keys(audio_extids), janus_sdp_id_compare), *iter = ids;
@@ -1377,9 +1400,6 @@ janus_sdp *janus_sdp_generate_offer(const char *name, const char *address, ...) 
 			}
 			g_list_free(ids);
 		}
-		/* It is safe to add transport-wide rtcp feedback message here, won't be used unless the header extension is negotiated */
-		a = janus_sdp_attribute_create("rtcp-fb", "%d transport-cc", audio_pt);
-		m->attributes = g_list_append(m->attributes, a);
 		offer->m_lines = g_list_append(offer->m_lines, m);
 	}
 	if(do_video) {
@@ -1401,10 +1421,12 @@ janus_sdp *janus_sdp_generate_offer(const char *name, const char *address, ...) 
 			a = janus_sdp_attribute_create("rtcp-fb", "%d goog-remb", video_pt);
 			m->attributes = g_list_append(m->attributes, a);
 		}
-		/* It is safe to add transport-wide rtcp feedback message here, won't be used unless the header extension is negotiated */
-		a = janus_sdp_attribute_create("rtcp-fb", "%d transport-cc", video_pt);
-		m->attributes = g_list_append(m->attributes, a);
-		/* Check if we need to add audio extensions to the SDP */
+		if(twcc_video) {
+			/* Add the transport-wide RTCP feedback message here, since the header extension was negotiated */
+			a = janus_sdp_attribute_create("rtcp-fb", "%d transport-cc", video_pt);
+			m->attributes = g_list_append(m->attributes, a);
+		}
+		/* Check if we need to add video extensions to the SDP */
 		if(video_extids != NULL) {
 			GList *ids = g_list_sort(g_hash_table_get_keys(video_extids), janus_sdp_id_compare), *iter = ids;
 			while(iter) {
@@ -1480,6 +1502,7 @@ janus_sdp *janus_sdp_generate_answer(janus_sdp *offer, ...) {
 		*audio_fmtp = NULL, *video_fmtp = NULL;
 	char *custom_audio_fmtp = NULL;
 	GList *extmaps = NULL;
+	gboolean twcc_audio = FALSE, twcc_video = FALSE;
 	janus_sdp_mdirection audio_dir = JANUS_SDP_SENDRECV, video_dir = JANUS_SDP_SENDRECV;
 	int property = va_arg(args, int);
 	while(property != JANUS_SDP_OA_DONE) {
@@ -1511,8 +1534,14 @@ janus_sdp *janus_sdp_generate_answer(janus_sdp *offer, ...) {
 			video_rtcpfb = va_arg(args, gboolean);
 		} else if(property == JANUS_SDP_OA_ACCEPT_EXTMAP) {
 			const char *extension = va_arg(args, char *);
-			if(extension != NULL)
+			if(extension != NULL) {
 				extmaps = g_list_append(extmaps, (char *)extension);
+				if(!strcasecmp(extension, JANUS_RTP_EXTMAP_TRANSPORT_WIDE_CC)) {
+					/* Take note of the fact we may negotiate TWCC */
+					twcc_audio = TRUE;
+					twcc_video = TRUE;
+				}
+			}
 		} else if(property == JANUS_SDP_OA_ACCEPT_OPUSRED) {
 			audio_opusred = va_arg(args, gboolean);
 		} else {
@@ -1727,6 +1756,30 @@ janus_sdp *janus_sdp_generate_answer(janus_sdp *offer, ...) {
 				}
 			}
 			am->ptypes = g_list_append(am->ptypes, GINT_TO_POINTER(pt));
+			/* Before moving to the attributes, check if the Trasport
+			 * Wide CC RTP extension was negotiated */
+			if(extmaps != NULL && ((m->type == JANUS_SDP_AUDIO && twcc_audio) ||
+					(m->type == JANUS_SDP_VIDEO && twcc_video))) {
+				/* We're trying to accept TWCC, but make sure it was offered */
+				if(m->type == JANUS_SDP_AUDIO)
+					twcc_audio = FALSE;
+				else
+					twcc_video = FALSE;
+				GList *ma = m->attributes;
+				while(ma) {
+					janus_sdp_attribute *a = (janus_sdp_attribute *)ma->data;
+					if(a->name && strstr(a->name, "extmap") && a->value &&
+							strstr(a->value, JANUS_RTP_EXTMAP_TRANSPORT_WIDE_CC) != NULL) {
+						/* Take note of the fact we'll have to negotiate TWCC for this m-line */
+						if(m->type == JANUS_SDP_AUDIO)
+							twcc_audio = TRUE;
+						else
+							twcc_video = TRUE;
+						break;
+					}
+					ma = ma->next;
+				}
+			}
 			/* Add the related attributes */
 			if(m->type == JANUS_SDP_AUDIO) {
 				/* Add rtpmap attribute */
@@ -1754,6 +1807,11 @@ janus_sdp *janus_sdp_generate_answer(janus_sdp *offer, ...) {
 							a = janus_sdp_attribute_create("rtpmap", "%d %s", dtmf_pt, janus_sdp_get_codec_rtpmap("dtmf"));
 							am->attributes = g_list_append(am->attributes, a);
 						}
+					}
+					if(twcc_audio) {
+						/* Add the transport-wide RTCP feedback message here, since the header extension was negotiated */
+						a = janus_sdp_attribute_create("rtcp-fb", "%d transport-cc", pt);
+						am->attributes = g_list_append(am->attributes, a);
 					}
 					/* If we're negotiating opus/red, add an fmtp line for that */
 					if(audio_opusred && red > 0) {
@@ -1786,9 +1844,11 @@ janus_sdp *janus_sdp_generate_answer(janus_sdp *offer, ...) {
 						a = janus_sdp_attribute_create("rtcp-fb", "%d goog-remb", pt);
 						am->attributes = g_list_append(am->attributes, a);
 					}
-					/* It is safe to add transport-wide rtcp feedback mesage here, won't be used unless the header extension is negotiated*/
-					a = janus_sdp_attribute_create("rtcp-fb", "%d transport-cc", pt);
-					am->attributes = g_list_append(am->attributes, a);
+					if(twcc_video) {
+						/* Add the transport-wide RTCP feedback message here, since the header extension was negotiated */
+						a = janus_sdp_attribute_create("rtcp-fb", "%d transport-cc", pt);
+						am->attributes = g_list_append(am->attributes, a);
+					}
 				}
 				if(!strcasecmp(codec, "vp9") && vp9_profile) {
 					/* Add a profile-id fmtp attribute */
@@ -1820,6 +1880,14 @@ janus_sdp *janus_sdp_generate_answer(janus_sdp *offer, ...) {
 								int id = atoi(a->value);
 								if(id < 0) {
 									JANUS_LOG(LOG_ERR, "Invalid extension ID (%d)\n", id);
+									temp = temp->next;
+									continue;
+								}
+								if(strstr(a->value, JANUS_RTP_EXTMAP_DEPENDENCY_DESC) &&
+										strcasecmp(codec, "av1") && strcasecmp(codec, "vp9")) {
+									/* Don't negotiate the Dependency Descriptor extension,
+									 * unless we're doing AV1 or VP9 for SVC. See for ref:
+									 * https://issues.webrtc.org/issues/42226269 */
 									temp = temp->next;
 									continue;
 								}

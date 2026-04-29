@@ -7,14 +7,14 @@ json = require('json')
 -- We also import our own SDP helper utilities: you may have better ones
 sdp = require('janus-sdp')
 -- Let's also use our ugly stdout logger just for the fun of it: to add
--- some color to the text we use the ansicolors library
--- (https://github.com/kikito/ansicolors.lua)
-colors = require "ansicolors"
+-- some color to the text we use the lua-term library
+-- (https://github.com/hoelzro/lua-term)
+colors = require('term.colors')
 logger = require('janus-logger')
 
 -- Example details
 name = "videoroom.lua"
-logger.prefix(colors("[%{blue}" .. name .. "%{reset}]"))
+logger.prefix("[" .. colors.blue .. name .. colors.reset .. "]")
 logger.print("Loading...")
 
 -- State and properties
@@ -913,7 +913,7 @@ function resumeScheduler()
 	for index,task in ipairs(tasks) do
 		local success, result = coroutine.resume(task.co, task.id, task.tr, task.msg, task.jsep)
 		if not success then
-			logger.print(colors("[%{red}exception%{reset}]") .. " " .. dumpTable(result))
+			logger.print(colors.red .. " " .. dumpTable(result) .. colors.reset)
 		end
 	end
 	logger.print("Coroutines resumed")

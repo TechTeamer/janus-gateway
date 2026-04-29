@@ -351,8 +351,9 @@ Janus.init = function(options) {
 				oldOBF();
 			}
 		});
-		// If this is a Safari Technology Preview, check if VP8 is supported
+		// If this is a Safari, check if VP8 or VP9 are supported
 		Janus.safariVp8 = false;
+		Janus.safariVp9 = false;
 		if(Janus.webRTCAdapter.browserDetails.browser === 'safari' &&
 				Janus.webRTCAdapter.browserDetails.version >= 605) {
 			// Let's see if RTCRtpSender.getCapabilities() is there
@@ -361,7 +362,8 @@ Janus.init = function(options) {
 				for(var codec of RTCRtpSender.getCapabilities("video").codecs) {
 					if(codec && codec.mimeType && codec.mimeType.toLowerCase() === "video/vp8") {
 						Janus.safariVp8 = true;
-						break;
+					} else if(codec && codec.mimeType && codec.mimeType.toLowerCase() === "video/vp9") {
+						Janus.safariVp9 = true;
 					}
 				}
 				if(Janus.safariVp8) {
@@ -376,6 +378,7 @@ Janus.init = function(options) {
 				var testpc = new RTCPeerConnection({});
 				testpc.createOffer({offerToReceiveVideo: true}).then(function(offer) {
 					Janus.safariVp8 = offer.sdp.indexOf("VP8") !== -1;
+					Janus.safariVp9 = offer.sdp.indexOf("VP9") !== -1;
 					if(Janus.safariVp8) {
 						Janus.log("This version of Safari supports VP8");
 					} else {
@@ -1158,6 +1161,7 @@ function Janus(gatewayCallbacks) {
 		callbacks.error = (typeof callbacks.error == "function") ? callbacks.error : Janus.noop;
 		callbacks.dataChannelOptions = callbacks.dataChannelOptions || { ordered: true };
 		callbacks.consentDialog = (typeof callbacks.consentDialog == "function") ? callbacks.consentDialog : Janus.noop;
+		callbacks.connectionState = (typeof callbacks.connectionState == "function") ? callbacks.connectionState : Janus.noop;
 		callbacks.iceState = (typeof callbacks.iceState == "function") ? callbacks.iceState : Janus.noop;
 		callbacks.mediaState = (typeof callbacks.mediaState == "function") ? callbacks.mediaState : Janus.noop;
 		callbacks.webrtcState = (typeof callbacks.webrtcState == "function") ? callbacks.webrtcState : Janus.noop;
@@ -1248,6 +1252,7 @@ function Janus(gatewayCallbacks) {
 						data : function(callbacks) { sendData(handleId, callbacks); },
 						dtmf : function(callbacks) { sendDtmf(handleId, callbacks); },
 						consentDialog : callbacks.consentDialog,
+						connectionState : callbacks.connectionState,
 						iceState : callbacks.iceState,
 						mediaState : callbacks.mediaState,
 						webrtcState : callbacks.webrtcState,
@@ -1334,6 +1339,7 @@ function Janus(gatewayCallbacks) {
 						data : function(callbacks) { sendData(handleId, callbacks); },
 						dtmf : function(callbacks) { sendDtmf(handleId, callbacks); },
 						consentDialog : callbacks.consentDialog,
+						connectionState : callbacks.connectionState,
 						iceState : callbacks.iceState,
 						mediaState : callbacks.mediaState,
 						webrtcState : callbacks.webrtcState,
@@ -1847,6 +1853,10 @@ function Janus(gatewayCallbacks) {
 				config.bitrate.value = "0 kbits/sec";
 			}
 			Janus.log("Preparing local SDP and gathering candidates (trickle=" + config.trickle + ")");
+			config.pc.onconnectionstatechange = function() {
+				if(config.pc)
+					pluginHandle.connectionState(config.pc.connectionState);
+			};
 			config.pc.oniceconnectionstatechange = function() {
 				if(config.pc)
 					pluginHandle.iceState(config.pc.iceConnectionState);
@@ -3221,7 +3231,7 @@ function Janus(gatewayCallbacks) {
 									return;
 								var inStats = false;
 								// Check if these are statistics on incoming media
-								if((res.mediaType === "video" || res.id.toLowerCase().indexOf("video") > -1) &&
+								if((res.mediaType === "video" || res.kind === "video" || res.id.toLowerCase().indexOf("video") > -1) &&
 										res.type === "inbound-rtp" && res.id.indexOf("rtcp") < 0) {
 									// New stats
 									inStats = true;

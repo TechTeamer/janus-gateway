@@ -409,6 +409,7 @@ static void *janus_duktape_async_event_helper(void *data) {
 	g_free(asev->transaction);
 	janus_refcount_decrease(&asev->session->ref);
 	g_free(asev);
+	g_thread_unref(g_thread_self());
 	return NULL;
 }
 
@@ -1605,8 +1606,8 @@ int janus_duktape_init(janus_callbacks *callback, const char *config_path) {
 		return -1;
 	}
 	fseek(f, 0, SEEK_END);
-	size_t len = ftell(f);
-	if(len < 1) {
+	long int fs = ftell(f);
+	if(fs < 1) {
 		JANUS_LOG(LOG_ERR, "Error loading JS script %s: empty file\n", duktape_file);
 		fclose(f);
 		duk_destroy_heap(duktape_ctx);
@@ -1614,9 +1615,18 @@ int janus_duktape_init(janus_callbacks *callback, const char *config_path) {
 		g_free(duktape_file);
 		return -1;
 	}
+	size_t len = fs;
 	char *buf = (char *)g_malloc0(len);
 	fseek(f, 0, SEEK_SET);
-	fread((void *)buf, 1, len, f);
+	if(fread((void *)buf, 1, len, f) < len) {
+		JANUS_LOG(LOG_ERR, "Error reading JS script %s: %s\n", duktape_file, g_strerror(errno));
+		g_free(buf);
+		fclose(f);
+		duk_destroy_heap(duktape_ctx);
+		g_free(duktape_folder);
+		g_free(duktape_file);
+		return -1;
+	}
 	fclose(f);
 	duk_push_lstring(duktape_ctx, (const char *)buf, (duk_size_t)len);
 	g_free(buf);
@@ -1838,11 +1848,12 @@ int janus_duktape_get_version(void) {
 	/* Check if the JS script wants to override this method and return info itself */
 	if(has_get_version) {
 		/* Yep, pass the request to the JS script and return the info */
+		janus_mutex_lock(&duktape_mutex);
 		if(duktape_script_version != -1) {
 			/* Unless we asked already */
+			janus_mutex_unlock(&duktape_mutex);
 			return duktape_script_version;
 		}
-		janus_mutex_lock(&duktape_mutex);
 		duk_idx_t thr_idx = duk_push_thread(duktape_ctx);
 		duk_context *t = duk_get_context(duktape_ctx, thr_idx);
 		duk_get_global_string(t, "getVersion");
@@ -1869,11 +1880,12 @@ const char *janus_duktape_get_version_string(void) {
 	/* Check if the JS script wants to override this method and return info itself */
 	if(has_get_version_string) {
 		/* Yep, pass the request to the JS script and return the info */
+		janus_mutex_lock(&duktape_mutex);
 		if(duktape_script_version_string != NULL) {
 			/* Unless we asked already */
+			janus_mutex_unlock(&duktape_mutex);
 			return duktape_script_version_string;
 		}
-		janus_mutex_lock(&duktape_mutex);
 		duk_idx_t thr_idx = duk_push_thread(duktape_ctx);
 		duk_context *t = duk_get_context(duktape_ctx, thr_idx);
 		duk_get_global_string(t, "getVersionString");
@@ -1902,11 +1914,12 @@ const char *janus_duktape_get_description(void) {
 	/* Check if the JS script wants to override this method and return info itself */
 	if(has_get_description) {
 		/* Yep, pass the request to the JS script and return the info */
+		janus_mutex_lock(&duktape_mutex);
 		if(duktape_script_description != NULL) {
 			/* Unless we asked already */
+			janus_mutex_unlock(&duktape_mutex);
 			return duktape_script_description;
 		}
-		janus_mutex_lock(&duktape_mutex);
 		duk_idx_t thr_idx = duk_push_thread(duktape_ctx);
 		duk_context *t = duk_get_context(duktape_ctx, thr_idx);
 		duk_get_global_string(t, "getDescription");
@@ -1935,11 +1948,12 @@ const char *janus_duktape_get_name(void) {
 	/* Check if the JS script wants to override this method and return info itself */
 	if(has_get_name) {
 		/* Yep, pass the request to the JS script and return the info */
+		janus_mutex_lock(&duktape_mutex);
 		if(duktape_script_name != NULL) {
 			/* Unless we asked already */
+			janus_mutex_unlock(&duktape_mutex);
 			return duktape_script_name;
 		}
-		janus_mutex_lock(&duktape_mutex);
 		duk_idx_t thr_idx = duk_push_thread(duktape_ctx);
 		duk_context *t = duk_get_context(duktape_ctx, thr_idx);
 		duk_get_global_string(t, "getName");
@@ -1968,11 +1982,12 @@ const char *janus_duktape_get_author(void) {
 	/* Check if the JS script wants to override this method and return info itself */
 	if(has_get_author) {
 		/* Yep, pass the request to the JS script and return the info */
+		janus_mutex_lock(&duktape_mutex);
 		if(duktape_script_author != NULL) {
 			/* Unless we asked already */
+			janus_mutex_unlock(&duktape_mutex);
 			return duktape_script_author;
 		}
-		janus_mutex_lock(&duktape_mutex);
 		duk_idx_t thr_idx = duk_push_thread(duktape_ctx);
 		duk_context *t = duk_get_context(duktape_ctx, thr_idx);
 		duk_get_global_string(t, "getAuthor");
@@ -2001,11 +2016,12 @@ const char *janus_duktape_get_package(void) {
 	/* Check if the JS script wants to override this method and return info itself */
 	if(has_get_package) {
 		/* Yep, pass the request to the JS script and return the info */
+		janus_mutex_lock(&duktape_mutex);
 		if(duktape_script_package != NULL) {
 			/* Unless we asked already */
+			janus_mutex_unlock(&duktape_mutex);
 			return duktape_script_package;
 		}
-		janus_mutex_lock(&duktape_mutex);
 		duk_idx_t thr_idx = duk_push_thread(duktape_ctx);
 		duk_context *t = duk_get_context(duktape_ctx, thr_idx);
 		duk_get_global_string(t, "getPackage");
@@ -2170,6 +2186,7 @@ json_t *janus_duktape_query_session(janus_plugin_session *handle) {
 		json_object_set_new(json, "error", json_string(duk_safe_to_string(t, -1)));
 		duk_pop(t);
 		duk_pop(duktape_ctx);
+		janus_mutex_unlock(&duktape_mutex);
 		janus_refcount_decrease(&session->ref);
 		return json;
 	}
@@ -2827,7 +2844,7 @@ static void janus_duktape_relay_rtp_packet(gpointer data, gpointer user_data) {
 		/* If we got here, update the RTP header and send the packet */
 		janus_rtp_header_update(packet->data, &session->rtpctx, TRUE, 0);
 		char vp8pd[6];
-		if(sender->vcodec == JANUS_VIDEOCODEC_VP8) {
+		if(sender->vcodec == JANUS_VIDEOCODEC_VP8 && plen >= (int)sizeof(vp8pd)) {
 			/* For VP8, we save the original payload descriptor, to restore it after */
 			memcpy(vp8pd, payload, sizeof(vp8pd));
 			janus_vp8_simulcast_descriptor_update(payload, plen, &session->vp8_context,
@@ -2843,7 +2860,7 @@ static void janus_duktape_relay_rtp_packet(gpointer data, gpointer user_data) {
 		/* Restore the timestamp and sequence number to what the publisher set them to */
 		packet->data->timestamp = htonl(packet->timestamp);
 		packet->data->seq_number = htons(packet->seq_number);
-		if(sender->vcodec == JANUS_VIDEOCODEC_VP8) {
+		if(sender->vcodec == JANUS_VIDEOCODEC_VP8 && plen >= (int)sizeof(vp8pd)) {
 			/* Restore the original payload descriptor as well, as it will be needed by the next viewer */
 			memcpy(payload, vp8pd, sizeof(vp8pd));
 		}

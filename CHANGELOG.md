@@ -3,6 +3,144 @@
 All notable changes to this project will be documented in this file.
 
 
+## [v0.16.1] - 2026-04-20
+
+- Fixed a few vulnerability issues (thanks to Haruto Kimura (Stella) and Kelvin Mbogo (Add Content) for reporting them and suggesting fixes!) [[PR-3636](https://github.com/meetecho/janus-gateway/pull/3636)] [[PR-3637](https://github.com/meetecho/janus-gateway/pull/3637)]
+- Add configurable startup check on open files ulimits
+- Change default JSON serialization to compact wherever applicable [[PR-3633](https://github.com/meetecho/janus-gateway/pull/3633)]
+- Fixed a few memory leaks in the MQTT transport (thanks @amnonbb!) [[PR-3634](https://github.com/meetecho/janus-gateway/pull/3634)]
+- Other smaller fixes and improvements (thanks to all who contributed pull requests and reported issues!)
+
+## [v0.16.0] - 2026-02-06
+
+- Generate a pkg-config .pc file when installing Janus [[PR-3596](https://github.com/meetecho/janus-gateway/pull/3596)]
+- Strip some WebRTC-specific SDP attributes in SIP and NoSIP plugins
+- Added RTP forwarders support to SIP and NoSIP plugins (thanks @WebTrit!) [[PR-3583](https://github.com/meetecho/janus-gateway/pull/3583)]
+- Fixed subscription renewal possibly going to the wrong host in the SIP plugin (thanks @digiboridev!) [[PR-3602](https://github.com/meetecho/janus-gateway/pull/3602)]
+- Laid foundations for plugin-specific unique session ID in SIP and NoSIP plugins [[PR-3607](https://github.com/meetecho/janus-gateway/pull/3607)]
+- Fixed 'use-after-free' in SIP session helpers (thanks @oleksandr-mihal-zultys!) [[PR-3614](https://github.com/meetecho/janus-gateway/pull/3614)]
+- Fixed SIP plugin not offering SRTP in response to offerless INVITEs [[PR-3618](https://github.com/meetecho/janus-gateway/pull/3618)]
+- Added new janus-pp-rec option to ignore RTP headers for timing purposes
+- Other smaller fixes and improvements (thanks to all who contributed pull requests and reported issues!)
+
+## [v0.15.3] - 2025-10-21
+
+- Refactored keyframe buffering in Streaming plugin to store following deltas too (thanks [Byborg](https://www.byborgenterprises.com/)!) [[PR-3576](https://github.com/meetecho/janus-gateway/pull/3576)]
+- Added optional events for RTSP disconnections/reconnections in the Streaming plugin [[PR-3578](https://github.com/meetecho/janus-gateway/pull/3578)]
+- Fixed small leak when recording Streaming mountpoints
+- Fixed rare crash in AudioBridge when notifying participants [[PR-3589](https://github.com/meetecho/janus-gateway/pull/3589)]
+- Added option for managing ringing manually in the SIP plugin (thanks @adnanel!) [[PR-3556](https://github.com/meetecho/janus-gateway/pull/3556)]
+- Save custom headers and send them on SIP hangup event (thanks @kenangenjac!) [[PR-3558](https://github.com/meetecho/janus-gateway/pull/3558)]
+- Fix small memory leak in SIP plugin (thanks @oleksandr-mihal-zultys!) [[PR-3566](3566)]
+- Added support for Linux cooked capture v2 to pcap2mjr
+- Other smaller fixes and improvements (thanks to all who contributed pull requests and reported issues!)
+
+## [v0.15.2] - 2025-07-10
+
+- Added workaround to potential libnice issue
+- Deprecated nice_debug option (libnice debugging can be enabled via env variables) [[PR-3546](https://github.com/meetecho/janus-gateway/pull/3546)]
+- Fixed broken session count in case of timeouts [[Issue-3526](https://github.com/meetecho/janus-gateway/issues/3526)]
+- Fixed broken session count in case of API disconnections [[Issue-3532](https://github.com/meetecho/janus-gateway/issues/3532)]
+- Fixed broken multiopus demo
+- Added request to stop all AudioBridge announcements in a room (thanks @keremcadirci!) [[PR-3403](https://github.com/meetecho/janus-gateway/pull/3403)]
+- Allow plain RTP participants in AudioBridge to use generate_offer too [[PR-3534](https://github.com/meetecho/janus-gateway/pull/3534)]
+- Fixed breaking condition in AudioBridge
+- Other smaller fixes and improvements (thanks to all who contributed pull requests and reported issues!)
+
+## [v0.15.1] - 2025-03-05
+
+- Make ip-utils aware of 0.0.0.0 and :: [[Issue-3470](https://github.com/meetecho/janus-gateway/issues/3470)]
+- Optimize NACKs handling [[PR-3471](https://github.com/meetecho/janus-gateway/pull/3471)]
+- Fixed memory leak in VideoRoom (thanks @m08pvv!) [[PR-3493](https://github.com/meetecho/janus-gateway/pull/3493)]
+- Check if IPv6 is disabled when loading the Streaming plugin [[PR-3519](https://github.com/meetecho/janus-gateway/pull/3519)]
+- Add support for "progress" request on SIP Plugin (thanks @adnan-mujagic!) [[PR-3466](https://github.com/meetecho/janus-gateway/pull/3466)]
+- New programmatic API to ask for keyframes in SIP and NoSIP plugins [[PR-3517](https://github.com/meetecho/janus-gateway/pull/3517)]
+- Fixed missing libcurl linking in TextRoom plugin
+- Added support for private recordings in Record&Play [[PR-3518](https://github.com/meetecho/janus-gateway/pull/3518)]
+- Fixed WebSocket transport binding to the wrong IP address in particular setups [[Issue-3500](https://github.com/meetecho/janus-gateway/issues/3550)]
+- Improve DTX detection in janus-pp-rec [[PR-3488](https://github.com/meetecho/janus-gateway/pull/3488)]
+- Other smaller fixes and improvements (thanks to all who contributed pull requests and reported issues!)
+
+## [v0.15.0] - 2024-11-25
+
+- Refactored logging internals [[PR-3428](https://github.com/meetecho/janus-gateway/pull/3428)]
+- Use strtok to parse SDPs [[PR-3424](https://github.com/meetecho/janus-gateway/pull/3424)]
+- Diluted frequency of PLI in the VideoRoom (thanks @natikaltura!) [[PR-3476](https://github.com/meetecho/janus-gateway/pull/3476)]
+- Fixed compilation of AudioBridge in case libogg isn't available (thanks @tmatth!) [[PR-3438](https://github.com/meetecho/janus-gateway/pull/3438)]
+- Better management of call cleanup in SIP plugin [[Issue-3430](https://github.com/meetecho/janus-gateway/issues/3430)]
+- Change the way call-IDs are tracked in the SIP plugin (thanks WebTrit!) [[PR-3443](https://github.com/meetecho/janus-gateway/pull/3443)]
+- Increased maximum size of custom SIP headers [[Issue-3459](https://github.com/meetecho/janus-gateway/issues/3459)]
+- Other smaller fixes and improvements (thanks to all who contributed pull requests and reported issues!)
+
+## [v0.14.4] - 2024-09-10
+
+- Limit number of SDP lines when parsing (workaround for OSS-Fuzz issue) [[PR-3414](https://github.com/meetecho/janus-gateway/pull/3414)]
+- Normalized monotonic time to Janus start
+- Added PLC (packet loss concealment) support to the AudioBridge (thanks @spscream!) [[PR-3349](https://github.com/meetecho/janus-gateway/pull/3349)]
+- Cleanup participant queues when muted in the AudioBridge [[PR-3368](https://github.com/meetecho/janus-gateway/pull/3368)]
+- Added "listannouncements" request to the AudioBridge (thanks @keremcadirci!) [[PR-3391](https://github.com/meetecho/janus-gateway/pull/3391)]
+- Use sequence numbers instead of timestamps for the jitter buffer in the AudioBridge [[PR-3406](https://github.com/meetecho/janus-gateway/pull/3406)]
+- Fixed small leak in Lua and Duktape plugins [[PR-3409](https://github.com/meetecho/janus-gateway/pull/3409)]
+- Fixed management of data buffering in Streaming plugin [[PR-3412](https://github.com/meetecho/janus-gateway/pull/3412)]
+- Fixed event handers for SIP plugin when using Sofia SIP >= 1.13 (thanks @ ycherniavskyi!) [[PR-3386](https://github.com/meetecho/janus-gateway/pull/3386)]
+- Other smaller fixes and improvements (thanks to all who contributed pull requests and reported issues!)
+
+## [v0.14.3] - 2024-06-20
+
+- Reduced size of RTP header struct in core
+- Added optional RNNoise support to AudioBridge [[PR-3185]((https://github.com/meetecho/janus-gateway/pull/3185)]
+- Handle jitter buffer delay manually in AudioBridge [[PR-3353]((https://github.com/meetecho/janus-gateway/pull/3353)]
+- Fixed rare segfault when changing rooms in AudioBridge [[PR-3356]((https://github.com/meetecho/janus-gateway/pull/3356)]
+- Empty queues in AudioBridge when muting status changes [[PR-3368]((https://github.com/meetecho/janus-gateway/pull/3368)]
+- Fixed rare deadlock in AudioBridge plugin when closing connections [[PR-3387]((https://github.com/meetecho/janus-gateway/pull/3387)]
+- Fixed compilation errors on MacOS for HTTP transport plugin [[Issue-3366]((https://github.com/meetecho/janus-gateway/issues/3366)]
+- Other smaller fixes and improvements (thanks to all who contributed pull requests and reported issues!)
+
+## [v0.14.2] - 2024-04-02
+
+* Perform audio-level detection in AudioBridge participant thread [[PR-3312](https://github.com/meetecho/janus-gateway/pull/3312)]
+* Fixed memory leak in AudioBridge in case of late packets
+* Ship speexdsp's jitter buffer as part of local AudioBridge dependencies [[PR-3348](https://github.com/meetecho/janus-gateway/pull/3348)]
+* Don't call close_pc in SIP plugin if there was no SDP [[PR-3339](https://github.com/meetecho/janus-gateway/pull/3339)]
+* Fixed broken faststart when postprocessing AV1 recordings (thanks @corthiclem!) [[PR-3317](https://github.com/meetecho/janus-gateway/pull/3317)]
+* Added new connectionState callback to janus.js (thanks @RSATom!) [[PR-3342](https://github.com/meetecho/janus-gateway/pull/3342)]
+* Exposed Janus and Admin API ping request via GET [[Issue-3336](https://github.com/meetecho/janus-gateway/issues/3336)]
+* Other smaller fixes and improvements (thanks to all who contributed pull requests and reported issues!)
+
+## [v0.14.1] - 2023-12-06
+
+* Fixed truncated label in datachannels (thanks @veeting!) [[PR-3265](https://github.com/meetecho/janus-gateway/pull/3265)]
+* Added suspend/resume participant API to AudioBridge [[PR-2989](https://github.com/meetecho/janus-gateway/pull/2989)]
+* Fixed rare crash in AudioBridge
+* Fixed rare crash in Streaming plugin when doing ICE restarts [[Issue-3288](https://github.com/meetecho/janus-gateway/issues/3288)]
+* Added IPv6 support to SIP and NoSIP plugins
+* Removed advertised support for SIP UPDATE in SIP plugin
+* Parse RFC2833 DTMF to custom events in SIP plugin (thanks @ywmoyue!) [[PR-3280](https://github.com/meetecho/janus-gateway/pull/3280)]
+* Fixed missing Contact header in some dialogs in SIP plugin (thanks @ycherniavskyi!) [[PR-3286](https://github.com/meetecho/janus-gateway/pull/3286)]
+* Fixed broken restamping in janus-pp-rec
+* Other smaller fixes and improvements (thanks to all who contributed pull requests and reported issues!)
+
+## [v0.14.0] - 2023-08-09
+
+- Fixed RTCP out quality stats [[PR-3228](https://github.com/meetecho/janus-gateway/pull/3228)]
+- Default link quality stats to 100
+- Added support for ICE consent freshness [[PR-3234](https://github.com/meetecho/janus-gateway/pull/3234)]
+- Use speexdsp's jitter buffer in the AudioBridge [[PR-3214](https://github.com/meetecho/janus-gateway/pull/3214)]
+- Fixed rare deadlock in Streamin plugin [[PR-3246](https://github.com/meetecho/janus-gateway/pull/3246)]
+- Fix simulated leave message for longer string ID rooms in TextRoom (thanks @adnanel!) [PR-3243](https://github.com/meetecho/janus-gateway/pull/3243)]
+- Notify about count of sessions, handles and PeerConnections on a regular basis, when event handlers are enabled [[PR-3221](https://github.com/meetecho/janus-gateway/pull/3221)]
+- Other smaller fixes and improvements (thanks to all who contributed pull requests and reported issues!)
+
+## [v0.13.4] - 2023-05-19
+
+- Moved discussions from Google Group to Discourse
+- Add support for receiving offers in Streaming plugin (for WHEP) [[PR-3199](https://github.com/meetecho/janus-gateway/pull/3199)]
+- Add newline for SIP headers that are overflown in length (thanks @zayim!) [[PR-3184](https://github.com/meetecho/janus-gateway/pull/3184)]
+- Save SIP reason state on multiple callbacks (thanks @kenangenjac!) [[PR-3210](https://github.com/meetecho/janus-gateway/pull/3210)]
+- Avoid parsing whitespace as invalid JSON when receiving WebSocket messages (thanks @htrendev!) [[PR-3209](https://github.com/meetecho/janus-gateway/pull/3209)]
+- Fixed some typos and added some tweaks to Admin API demo
+- Other smaller fixes and improvements (thanks to all who contributed pull requests and reported issues!)
+
 ## [v0.13.3] - 2023-03-06
 
 - Added configurable cap to number of queued events when reconnecting WebSocket event handler [[PR-3148](https://github.com/meetecho/janus-gateway/pull/3148)]

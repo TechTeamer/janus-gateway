@@ -1,4 +1,4 @@
-AC_INIT([Janus WebRTC Server],[0.13.4],[https://github.com/meetecho/janus-gateway],[janus-gateway],[https://janus.conf.meetecho.com])
+AC_INIT([Janus WebRTC Server],[0.16.1],[https://github.com/meetecho/janus-gateway],[janus-gateway],[https://janus.conf.meetecho.com])
 AC_LANG(C)
 AC_CONFIG_AUX_DIR([.])
 AC_CONFIG_MACRO_DIR([m4])
@@ -21,7 +21,6 @@ CFLAGS="$CFLAGS \
 	-fPIC \
 	-fstack-protector-all \
 	-fstrict-aliasing \
-	-ggdb3 \
 	-pthread \
 	-Wall \
 	-Warray-bounds \
@@ -30,7 +29,7 @@ CFLAGS="$CFLAGS \
 	-Wformat-security \
 	-Wformat=2 \
 	-Winit-self \
-	-Wlarger-than=65537 \
+	-Wlarger-than=2097152 \
 	-Wmissing-declarations \
 	-Wmissing-format-attribute \
 	-Wmissing-include-dirs \
@@ -53,8 +52,8 @@ case "$CC" in
 *clang*)
 	# Specific clang flags
 	CFLAGS="$CFLAGS \
-		-Wno-cast-align \
-		-Wno-initializer-overrides"
+		-Wno-initializer-overrides \
+		-Wno-missing-noreturn"
 ;;
 cc*)
 	CFLAGS="$CFLAGS \
@@ -64,15 +63,14 @@ cc*)
 *)
 	# Specific gcc flags
 	CFLAGS="$CFLAGS \
-		-Wcast-align \
 		-Wno-override-init \
 		-Wunsafe-loop-optimizations \
 		-Wunused-but-set-variable"
 esac
 
-JANUS_VERSION=134
+JANUS_VERSION=161
 AC_SUBST(JANUS_VERSION)
-JANUS_VERSION_STRING="0.13.4"
+JANUS_VERSION_STRING="0.16.1"
 AC_SUBST(JANUS_VERSION_STRING)
 
 case "$host_os" in
@@ -98,6 +96,9 @@ esac
 glib_version=2.34
 ssl_version=1.0.1
 jansson_version=2.5
+
+JANUS_PACKAGES_PUBLIC="glib-2.0 >= $glib_version, jansson >= $jansson_version"
+AC_SUBST(JANUS_PACKAGES_PUBLIC)
 
 ##
 # Janus
@@ -373,7 +374,7 @@ AS_IF([test "x${boringssl_dir}" != "x"],
 	   CFLAGS="$CFLAGS -I${boringssl_dir}/include";
 	   BORINGSSL_CFLAGS=" -I${boringssl_dir}/include";
        AC_SUBST(BORINGSSL_CFLAGS)
-	   BORINGSSL_LIBS=" -L${boringssl_dir}/lib";
+	   BORINGSSL_LIBS=" -L${boringssl_dir}/lib -lstdc++";
        AC_SUBST(BORINGSSL_LIBS)
 	   AC_CHECK_HEADERS([${boringssl_dir}/include/openssl/opensslconf.h],
 	                    [AC_DEFINE(HAVE_BORINGSSL)],
@@ -422,6 +423,12 @@ AC_CHECK_LIB([nice],
              [nice_agent_new_full],
              [AC_DEFINE(HAVE_ICE_NOMINATION)],
              [AC_MSG_NOTICE([libnice version does not have nice_agent_new_full])]
+             )
+
+AC_CHECK_LIB([nice],
+             [nice_agent_consent_lost],
+             [AC_DEFINE(HAVE_CONSENT_FRESHNESS)],
+             [AC_MSG_NOTICE([libnice version does not have nice_agent_consent_lost])]
              )
 
 AC_CHECK_LIB([dl],
@@ -551,13 +558,6 @@ PKG_CHECK_MODULES([MHD],
 AC_SUBST([MHD_CFLAGS])
 AC_SUBST([MHD_LIBS])
 AM_CONDITIONAL([ENABLE_REST], [test "x$enable_rest" = "xyes"])
-AM_COND_IF([ENABLE_REST],
-           [
-             AC_CHECK_TYPES([enum MHD_Result],
-                            [],
-                            [],
-                            [#include <microhttpd.h>])
-           ])
 
 AC_CHECK_LIB([websockets],
 			 [lws_create_vhost],
@@ -796,10 +796,19 @@ AC_SUBST([SOFIA_CFLAGS])
 AC_SUBST([SOFIA_LIBS])
 
 PKG_CHECK_MODULES([OPUS],
-                  [opus],
+                  [
+                   opus
+                  ],
                   [
                     AS_IF([test "x$enable_plugin_audiobridge" = "xmaybe"],
-                          [enable_plugin_audiobridge=yes])
+                          [
+                           enable_plugin_audiobridge=yes
+                          ])
+                    AS_IF([test "x$enable_plugin_audiobridge" = "xyes"],
+                          [
+                           AC_DEFINE(FLOATING_POINT)
+                           AC_DEFINE([EXPORT], [], [Symbol visibility prefix])
+                          ])
                   ],
                   [
                     AS_IF([test "x$enable_plugin_audiobridge" = "xyes"],
@@ -821,6 +830,16 @@ PKG_CHECK_MODULES([OGG],
                   ])
 AC_SUBST([OGG_CFLAGS])
 AC_SUBST([OGG_LIBS])
+
+PKG_CHECK_MODULES([RNNOISE],
+                  [rnnoise],
+                  [
+                    AC_DEFINE(HAVE_RNNOISE)
+                  ],
+                  [
+                  ])
+AC_SUBST([RNNOISE_CFLAGS])
+AC_SUBST([RNNOISE_LIBS])
 
 PKG_CHECK_MODULES([LUA],
                   [lua],
@@ -989,6 +1008,7 @@ AC_CONFIG_FILES([
   Makefile
   html/Makefile
   docs/Makefile
+  janus-gateway.pc
 ])
 
 JANUS_MANUAL_LIBS+=" -pthread"

@@ -166,6 +166,8 @@ static int restamp_min_th = DEFAULT_RESTAMP_MIN_TH;
 #define DEFAULT_RESTAMP_PACKETS 10
 static int restamp_packets = DEFAULT_RESTAMP_PACKETS;
 
+static gboolean ignore_rtp_ts;
+
 /* Signal handler */
 static void janus_pp_handle_signal(int signum) {
 	working = 0;
@@ -223,14 +225,13 @@ static char *janus_pp_extensions_string(const char **allowed, char *supported, s
 }
 
 /* Main Code */
-int main(int argc, char *argv[])
-{
+int main(int argc, char *argv[]) {
 	struct gengetopt_args_info args_info;
 	/* Let's call our cmdline parser */
 	if(cmdline_parser(argc, argv, &args_info) != 0)
 		exit(1);
 
-	janus_log_init(FALSE, TRUE, NULL);
+	janus_log_init(FALSE, TRUE, NULL, NULL);
 	atexit(janus_log_destroy);
 
 	/* Check if we only need to print the supported extensions for all codecs */
@@ -339,6 +340,8 @@ int main(int argc, char *argv[])
 		if(val >= 0)
 			restamp_min_th = val;
 	}
+	if(args_info.ignore_rtp_ts_flag)
+		ignore_rtp_ts = TRUE;
 	/* Evaluate arguments to find source and target */
 	char *source = NULL, *destination = NULL, *setting = NULL;
 	int i=0;
@@ -395,6 +398,8 @@ int main(int argc, char *argv[])
 			JANUS_LOG(LOG_INFO, "Video orientation extension ID: %d\n", video_orient_extmap_id);
 		if(silence_distance > 0)
 			JANUS_LOG(LOG_INFO, "RTP silence suppression distance: %d\n", silence_distance);
+		if(ignore_rtp_ts)
+			JANUS_LOG(LOG_INFO, "Will ignore RTP timestamps, and use arrival times for timing\n");
 		JANUS_LOG(LOG_INFO, "\n");
 		if(source != NULL)
 			JANUS_LOG(LOG_INFO, "Source file: %s\n", source);
@@ -420,7 +425,7 @@ int main(int argc, char *argv[])
 	}
 
 	if(janus_faststart && strcasecmp(extension, "mp4")) {
-		JANUS_LOG(LOG_ERR, "Faststart only supported for MP4");
+		JANUS_LOG(LOG_ERR, "Faststart only supported for MP4\n");
 		cmdline_parser_free(&args_info);
 		exit(1);
 	}
@@ -555,6 +560,11 @@ int main(int argc, char *argv[])
 			offset += 2;
 			if(len > 0 && !parsed_header) {
 				/* This is the info header */
+				if(len >= sizeof(prebuffer)) {
+					JANUS_LOG(LOG_FATAL, "JSON header too large (%d bytes)\n", len);
+					cmdline_parser_free(&args_info);
+					exit(1);
+				}
 				bytes = fread(prebuffer, sizeof(char), len, file);
 				parsed_header = TRUE;
 				prebuffer[len] = '\0';
@@ -833,7 +843,7 @@ int main(int argc, char *argv[])
 	uint32_t pkt_ts = 0, highest_rtp_ts = 0;
 	uint16_t highest_seq = 0;
 	/* Start from 1 to take into account late packets */
-	int times_resetted = 1;
+	int times_reset = 1;
 	uint64_t max32 = UINT32_MAX;
 	int ignored = 0;
 	offset = 0;
@@ -891,7 +901,7 @@ int main(int argc, char *argv[])
 			gint64 when = 0;
 			bytes = fread(&when, 1, sizeof(gint64), file);
 			if(bytes < (int)sizeof(gint64)) {
-				JANUS_LOG(LOG_WARN, "Missing data timestamp header");
+				JANUS_LOG(LOG_WARN, "Missing data timestamp header\n");
 				break;
 			}
 			when = ntohll(when);
@@ -973,6 +983,10 @@ int main(int argc, char *argv[])
 			JANUS_LOG(LOG_VERB, "  -- -- RTP extension (type=0x%"PRIX16", length=%"SCNu16")\n",
 				ntohs(ext->type), ntohs(ext->length));
 			rtp_read_n = ntohs(ext->length)*4;
+			if(rtp_header_len + rtp_read_n >= (int)sizeof(prebuffer)) {
+				JANUS_LOG(LOG_WARN, "RTP extension too large (%d bytes), skipping packet\n", rtp_read_n);
+				break;
+			}
 			skip += 4 + rtp_read_n;
 			bytes = fread(prebuffer+rtp_header_len, sizeof(char), rtp_read_n, file);
 			if(bytes < rtp_read_n) {
@@ -1022,7 +1036,7 @@ int main(int argc, char *argv[])
 			started = TRUE;
 			highest_rtp_ts = rtp_ts;
 			highest_seq = p->seq;
-			p->ts = (times_resetted*max32)+rtp_ts;
+			p->ts = (times_reset*max32)+rtp_ts;
 		} else {
 			if(!video && !data) {
 				/* Check if we need to handle the SIP silence suppression mode,
@@ -1062,7 +1076,7 @@ int main(int argc, char *argv[])
 				if(rtp_ts < highest_rtp_ts) {
 					/* Received TS is lower than highest --> reset */
 					JANUS_LOG(LOG_WARN, "Timestamp reset: %"SCNu32"\n", rtp_ts);
-					times_resetted++;
+					times_reset++;
 				}
 				highest_rtp_ts = rtp_ts;
 				highest_seq = p->seq;
@@ -1079,9 +1093,9 @@ int main(int argc, char *argv[])
 
 			/* Take into account the number of resets when setting the internal, 64-bit, timestamp */
 			if(!pre_reset_pkt)
-				p->ts = (times_resetted*max32)+rtp_ts;
+				p->ts = (times_reset*max32)+rtp_ts;
 			else
-				p->ts = ((times_resetted-1)*max32)+rtp_ts;
+				p->ts = ((times_reset-1)*max32)+rtp_ts;
 		}
 		if(rtp->padding) {
 			/* There's padding data, let's check the last byte to see how much data we should skip */
@@ -1149,7 +1163,7 @@ int main(int argc, char *argv[])
 						p->prev = tmp;
 						break;
 					} else if(tmp->seq > p->seq && (abs(tmp->seq - p->seq) > 10000)) {
-						/* The new sequence number (resetted) is greater than the last one we have, append */
+						/* The new sequence number (reset) is greater than the last one we have, append */
 						added = 1;
 						if(tmp->next != NULL) {
 							/* We're inserting */
@@ -1169,7 +1183,7 @@ int main(int argc, char *argv[])
 						break;
 					}
 				}
-				/* If either the timestamp ot the sequence number we just got is smaller, keep going back */
+				/* If either the timestamp or the sequence number we just got is smaller, keep going back */
 				tmp = tmp->prev;
 			}
 			if(p->drop) {
@@ -1210,14 +1224,34 @@ int main(int argc, char *argv[])
 	int rate = video ? 90000 : 48000;
 	if(g711 || g722)
 		rate = 8000;
-	double ts = 0.0, pts = 0.0;
+	double ts = 0.0, pts = 0.0, orig_ts = 0.0;
+	uint64_t orig_rtp_ts = 0, last_rtp_ts = 0, new_rtp_ts = list->ts;
 	while(tmp) {
 		count++;
 		if(!data) {
 			ts = (double)(tmp->ts - list->ts)/(double)rate;
 			pts = (double)tmp->p_ts/1000;
-			JANUS_LOG(LOG_VERB, "[%10lu][%4d] seq=%"SCNu16", ts=%"SCNu64", time=%.2fs pts=%.2fs\n",
-				tmp->offset, tmp->len, tmp->seq, tmp->ts, ts, pts);
+			if(!ignore_rtp_ts) {
+				JANUS_LOG(LOG_VERB, "[%10lu][%4d] seq=%"SCNu16", ts=%"SCNu64", time=%.2fs pts=%.2fs\n",
+					tmp->offset, tmp->len, tmp->seq, tmp->ts, ts, pts);
+			} else {
+				/* We need to rewrite the timestamps so that they match
+				 * the actual interarrival of packets, all taking into
+				 * account the fact that, for video, we'll need some
+				 * packets to have all the same RTP pseudo-timestamps */
+				orig_rtp_ts = tmp->ts;
+				orig_ts = ts;
+				if(orig_rtp_ts != last_rtp_ts) {
+					/* Calculate a new RTP timestamp */
+					new_rtp_ts = list->ts + ((uint64_t)tmp->p_ts * (rate/1000));
+				}
+				tmp->ts = new_rtp_ts;
+				ts = (double)(tmp->ts - list->ts)/(double)rate;
+				JANUS_LOG(LOG_VERB, "[%10lu][%4d] seq=%"SCNu16", ts=%"SCNu64" (orig=%"SCNu64"), time=%.2fs (orig=%.2fs) pts=%.2fs\n",
+					tmp->offset, tmp->len, tmp->seq, tmp->ts, orig_rtp_ts, ts, orig_ts, pts);
+				if(orig_rtp_ts != last_rtp_ts)
+					last_rtp_ts = orig_rtp_ts;
+			}
 		} else {
 			ts = (double)tmp->ts/G_USEC_PER_SEC;
 			JANUS_LOG(LOG_VERB, "[%10lu][%4d] time=%.2fs\n", tmp->offset, tmp->len, ts);
@@ -1225,6 +1259,12 @@ int main(int argc, char *argv[])
 		tmp = tmp->next;
 	}
 	JANUS_LOG(LOG_INFO, "Counted %"SCNu32" frame packets\n", count);
+	if(!data && !video) {
+		double diff = ts - pts;
+		if(diff < -0.5 || diff > 0.5 ) {
+			JANUS_LOG(LOG_WARN, "Detected audio clock mismatch, consider using skew compensation or restamping (rtp_time=%.2fs, real_time=%.2fs, diff=%.2fs)\n", ts, pts, diff);
+		}
+	}
 	if(rotated != -1) {
 		if(rotated == 0 && last_rotation != 0) {
 			JANUS_LOG(LOG_INFO, "The video is rotated\n");
@@ -1310,7 +1350,11 @@ int main(int argc, char *argv[])
 	}
 
 	/* Run restamping */
-	if(!video && !data && restamp_multiplier > 0) {
+	gboolean restamping = FALSE;
+	if(restamp_multiplier > 0) {
+		restamping = TRUE;
+	}
+	if(!video && !data && restamping > 0) {
 		tmp = list;
 		uint64_t restamping_offset = 0;
 		double restamp_threshold = (double) restamp_min_th/1000;
@@ -1342,6 +1386,7 @@ int main(int argc, char *argv[])
 
 					/* Update current packet ts with new ts */
 					tmp->ts = new_ts;
+					tmp->restamped = 1;
 
 					JANUS_LOG(LOG_WARN, "Timestamp gap detected. Restamping packets from here. Seq: %d\n", tmp->seq);
 					JANUS_LOG(LOG_INFO, "latency=%.2f mavg=%.2f original_ts=%.ld new_ts=%.ld offset=%.ld\n", current_latency, moving_avg_latency, original_ts, tmp->ts, restamping_offset);
@@ -1446,7 +1491,7 @@ int main(int argc, char *argv[])
 	/* Loop */
 	if(!video && !data) {
 		if(opus) {
-			if(janus_pp_opus_process(file, list, &working) < 0) {
+			if(janus_pp_opus_process(file, list, restamping, &working) < 0) {
 				JANUS_LOG(LOG_ERR, "Error processing Opus RTP frames...\n");
 			}
 		} else if(g711) {
@@ -1650,8 +1695,8 @@ static gint janus_pp_skew_compensate_audio(janus_pp_frame_packet *pkt, janus_pp_
 		exit_status = -1;
 	} else {
 		context->target_ts = 0;
-		/* Do not execute analysis for out of order packets or multi-packets frame */
-		if (context->last_seq == context->prev_seq + 1 && context->last_ts != context->prev_ts) {
+		/* Do not execute analysis for out of order packets or multi-packets frame or if pts < start_time */
+		if (context->last_seq == context->prev_seq + 1 && context->last_ts != context->prev_ts && pts >= context->start_time) {
 			/* Evaluate the local RTP timestamp according to the local clock */
 			guint64 expected_ts = ((pts - context->start_time) * akhz) + context->start_ts;
 			/* Evaluate current delay */
