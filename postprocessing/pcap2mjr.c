@@ -88,14 +88,13 @@ static void janus_p2m_handle_signal(int signum) {
 }
 
 /* Main Code */
-int main(int argc, char *argv[])
-{
+int main(int argc, char *argv[]) {
 	struct gengetopt_args_info args_info;
 	/* Let's call our cmdline parser */
 	if(cmdline_parser(argc, argv, &args_info) != 0)
 		exit(1);
 
-	janus_log_init(FALSE, TRUE, NULL);
+	janus_log_init(FALSE, TRUE, NULL, NULL);
 	atexit(janus_log_destroy);
 
 	/* Evaluate arguments to find source and target */
@@ -160,7 +159,7 @@ int main(int argc, char *argv[])
 		exit(1);
 	}
 	int link = pcap_datalink(pcap);
-	if(link != DLT_LINUX_SLL && link != DLT_EN10MB) {
+	if(link != DLT_LINUX_SLL && link != DLT_LINUX_SLL2 && link != DLT_EN10MB) {
 		JANUS_LOG(LOG_ERR, "Unsupported link type %d (%s) in capture\n",
 			link, pcap_datalink_val_to_name(link));
 		cmdline_parser_free(&args_info);
@@ -198,6 +197,12 @@ int main(int argc, char *argv[])
 		sizeof(struct udphdr) + 12, pkt_size = 0;
 	gboolean header_written = FALSE;
 	gint64 start_ts = 0, pkt_ts = 0;
+    pcap2mjr_ethernet_header eth;
+    struct sll_header lcc;
+    struct sll2_header lcc2;
+    struct ip v4;
+    struct ip6_hdr v6;
+    janus_pp_rtp_header rtp;
     while(working && (ret = pcap_next_ex(pcap, &header, &buffer)) >= 0) {
 		count++;
 		if(header->len != header->caplen) {
@@ -222,27 +227,33 @@ int main(int argc, char *argv[])
 		int protocol = 0;
 		if(link == DLT_EN10MB) {
 			/* Ethernet */
-			pcap2mjr_ethernet_header *eth = (pcap2mjr_ethernet_header *)temp;
-			protocol = ntohs(eth->type);
+			memcpy(&eth, temp, sizeof(pcap2mjr_ethernet_header));
+			protocol = ntohs(eth.type);
 			temp += sizeof(pcap2mjr_ethernet_header);
 			pkt_size -= sizeof(pcap2mjr_ethernet_header);
-		} else {
+		} else if(link == DLT_LINUX_SLL) {
 			/* Linux Cooked Capture */
-			struct sll_header *lcc = (struct sll_header *)temp;
-			protocol = ntohs(lcc->sll_protocol);
+			memcpy(&lcc, temp, sizeof(struct sll_header));
+			protocol = ntohs(lcc.sll_protocol);
 			temp += sizeof(struct sll_header);
 			pkt_size -= sizeof(struct sll_header);
+		} else {
+			/* Linux Cooked Capture v2 */
+			memcpy(&lcc2, temp, sizeof(struct sll2_header));
+			protocol = ntohs(lcc2.sll2_protocol);
+			temp += sizeof(struct sll2_header);
+			pkt_size -= sizeof(struct sll2_header);
 		}
 		if(protocol == 0x0800) {
 			/* IPv4 */
-			struct ip *v4 = (struct ip *)temp;
-			protocol = v4->ip_p;
+			memcpy(&v4, temp, sizeof(struct ip));
+			protocol = v4.ip_p;
 			temp += sizeof(struct ip);
 			pkt_size -= sizeof(struct ip);
 		} else if(protocol == 0x86DD) {
 			/* IPv6 */
-			struct ip6_hdr *v6 = (struct ip6_hdr *)temp;
-			protocol = v6->ip6_ctlun.ip6_un1.ip6_un1_nxt;
+			memcpy(&v6, temp, sizeof(struct ip6_hdr));
+			protocol = v6.ip6_ctlun.ip6_un1.ip6_un1_nxt;
 			temp += sizeof(struct ip6_hdr);
 			pkt_size -= sizeof(struct ip6_hdr);
 		} else {
@@ -261,14 +272,14 @@ int main(int argc, char *argv[])
 		temp += sizeof(struct udphdr);
 		pkt_size -= sizeof(struct udphdr);
 		/* Make sure this is an RTP packet */
-		janus_pp_rtp_header *rtp = (janus_pp_rtp_header *)temp;
-		if(rtp->version != 2 || (rtp->type >= 64 && rtp->type < 96)) {
+		memcpy(&rtp, temp, sizeof(janus_pp_rtp_header));
+		if(rtp.version != 2 || (rtp.type >= 64 && rtp.type < 96)) {
 			if(show_warnings) {
 				JANUS_LOG(LOG_WARN, "Not an RTP packet, skipping packet #%"SCNu32"\n", count);
 			}
 			continue;
 		}
-		pssrc = htonl(rtp->ssrc);
+		pssrc = htonl(rtp.ssrc);
 		if(ssrc == 0) {
 			ssrc = pssrc;
 			JANUS_LOG(LOG_INFO, "Autodetected SSRC %"SCNu32"\n", ssrc);

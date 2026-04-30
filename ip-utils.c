@@ -242,6 +242,15 @@ int janus_network_lookup_interface(const struct ifaddrs *ifas, const char *iface
 	if(ifas == NULL || iface == NULL || result == NULL)
 		return -EINVAL;
 	janus_network_address_nullify(result);
+	if(!strcmp(iface, "0.0.0.0")) {
+		result->family = AF_INET;
+		result->ipv4.s_addr = INADDR_ANY;
+		return 0;
+	} else if(!strcmp(iface, "::")) {
+		result->family = AF_INET6;
+		result->ipv6 = in6addr_any;
+		return 0;
+	}
 	janus_network_query_config q;
 	/* Let's see if iface is an IPv4 address, an IPv6 address, or possibly an interface name */
 	int res = janus_network_prepare_device_query(iface,
@@ -320,4 +329,52 @@ char *janus_network_detect_local_ip_as_string(janus_network_query_options addr_t
 	if(res != 0)
 		return NULL;
 	return g_strdup(janus_network_address_string_from_buffer(&buf));
+}
+
+int janus_network_resolve_address(const char *host, struct sockaddr_storage *address) {
+	if(!host || !address)
+		return -EINVAL;
+	/* Check whether we need to resolve the address*/
+	gboolean resolved = FALSE;
+	if(strstr(host, ":")) {
+		struct sockaddr_in6 *addr6 = (struct sockaddr_in6 *)address;
+		addr6->sin6_family = AF_INET6;
+		if(inet_pton(AF_INET6, host, &addr6->sin6_addr) == 1) {
+			/* Numeric IPv6 address */
+			resolved = TRUE;
+		}
+	} else {
+		struct sockaddr_in *addr = (struct sockaddr_in *)address;
+		addr->sin_family = AF_INET;
+		if(inet_pton(AF_INET, host, &addr->sin_addr) == 1) {
+			/* Numeric IPv4 address */
+			resolved = TRUE;
+		}
+	}
+	if(!resolved) {
+		/* Perform a getaddrinfo on the address */
+		struct addrinfo *result = NULL;
+		int res = getaddrinfo(host, NULL, NULL, &result);
+		if(res == 0) {
+			/* Address resolved */
+			struct addrinfo *temp = result;
+			while(temp && !resolved) {
+				if(result->ai_family == AF_INET6) {
+					resolved = TRUE;
+					struct sockaddr_in6 *addr6 = (struct sockaddr_in6 *)address;
+					struct sockaddr_in6 *remote = (struct sockaddr_in6 *)result->ai_addr;
+					memcpy(&addr6->sin6_addr, &remote->sin6_addr, sizeof(addr6->sin6_addr));
+				} else if(result->ai_family == AF_INET) {
+					resolved = TRUE;
+					struct sockaddr_in *addr = (struct sockaddr_in *)address;
+					struct sockaddr_in *remote = (struct sockaddr_in *)result->ai_addr;
+					memcpy(&addr->sin_addr, &remote->sin_addr, sizeof(addr->sin_addr));
+				}
+				temp = temp->ai_next;
+			}
+			freeaddrinfo(result);
+		}
+	}
+	/* Done */
+	return resolved ? 0 : -1;
 }

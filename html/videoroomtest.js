@@ -458,7 +458,7 @@ function newRemoteFeed(id, display, audio, video) {
 				// 		subscribe["offer_video"] = false;
 				// For example, if the publisher is VP8 and this is Safari, let's avoid video
 				if(Janus.webRTCAdapter.browserDetails.browser === "safari" &&
-						(video === "vp9" || (video === "vp8" && !Janus.safariVp8))) {
+						((video === "vp9" && !Janus.safariVp9) || (video === "vp8" && !Janus.safariVp8))) {
 					if(video)
 						video = video.toUpperCase()
 					toastr.warning("Publisher is using " + video + ", but Safari doesn't support it: disabling video");
@@ -673,12 +673,6 @@ function addSimulcastButtons(feed, temporal) {
 		'	</div>' +
 		'</div>'
 	);
-	if(Janus.webRTCAdapter.browserDetails.browser !== "firefox") {
-		// Chromium-based browsers only have two temporal layers
-		$('#tl'+index+'-2').remove();
-		$('#tl'+index+'-1').css('width', '50%');
-		$('#tl'+index+'-0').css('width', '50%');
-	}
 	// Enable the simulcast selection buttons
 	$('#sl' + index + '-0').removeClass('btn-primary btn-success').addClass('btn-primary')
 		.unbind('click').click(function() {

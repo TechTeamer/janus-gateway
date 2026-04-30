@@ -39,6 +39,7 @@
 #include "debug.h"
 #include "ip-utils.h"
 #include "rtcp.h"
+#include "rtpfwd.h"
 #include "auth.h"
 #include "record.h"
 #include "events.h"
@@ -80,7 +81,7 @@ static int pipefd[2];
 #ifdef REFCOUNT_DEBUG
 /* Reference counters debugging */
 GHashTable *counters = NULL;
-janus_mutex counters_mutex;
+janus_mutex counters_mutex = JANUS_MUTEX_INITIALIZER;
 #endif
 
 
@@ -361,8 +362,10 @@ static json_t *janus_info(const char *transaction) {
 #ifdef HAVE_ICE_NOMINATION
 	json_object_set_new(info, "ice-nomination", json_string(janus_ice_get_nomination_mode()));
 #endif
+	json_object_set_new(info, "ice-consent-freshness", janus_ice_is_consent_freshness_enabled() ? json_true() : json_false());
 	json_object_set_new(info, "ice-keepalive-conncheck", janus_ice_is_keepalive_conncheck_enabled() ? json_true() : json_false());
 	json_object_set_new(info, "full-trickle", janus_ice_is_full_trickle_enabled() ? json_true() : json_false());
+	json_object_set_new(info, "hangup-on-failed", janus_ice_is_hangup_on_failed_enabled() ? json_true() : json_false());
 	json_object_set_new(info, "mdns-enabled", janus_ice_is_mdns_enabled() ? json_true() : json_false());
 	json_object_set_new(info, "min-nack-queue", json_integer(janus_get_min_nack_queue()));
 	json_object_set_new(info, "nack-optimizations", janus_is_nack_optimizations_enabled() ? json_true() : json_false());
@@ -630,10 +633,13 @@ static janus_callbacks janus_handler_plugin =
 
 
 /* Core Sessions */
-static janus_mutex sessions_mutex;
+static janus_mutex sessions_mutex = JANUS_MUTEX_INITIALIZER;
 static GHashTable *sessions = NULL;
 static GMainContext *sessions_watchdog_context = NULL;
 
+/* Counters */
+static volatile gint sessions_num = 0;
+static volatile gint handles_num = 0;
 
 static void janus_ice_handle_dereference(janus_ice_handle *handle) {
 	if(handle)
@@ -651,6 +657,7 @@ static void janus_session_free(const janus_refcount *session_ref) {
 		janus_request_destroy(session->source);
 		session->source = NULL;
 	}
+	janus_mutex_destroy(&session->mutex);
 	g_free(session);
 }
 
@@ -706,8 +713,8 @@ static gboolean janus_check_sessions(gpointer user_data) {
 					if(janus_events_is_enabled())
 						janus_events_notify_handlers(JANUS_EVENT_TYPE_SESSION, JANUS_EVENT_SUBTYPE_NONE,
 							session->session_id, "timeout", NULL);
-					/* FIXME Is this safe? apparently it causes hash table errors on the console */
 					g_hash_table_iter_remove(&iter);
+					g_atomic_int_dec_and_test(&sessions_num);
 					janus_session_destroy(session);
 				}
 			}
@@ -737,6 +744,20 @@ static gpointer janus_sessions_watchdog(gpointer user_data) {
 	return NULL;
 }
 
+static gboolean janus_status_sessions(gpointer user_data) {
+	if(janus_events_is_enabled()) {
+		json_t *info = json_object();
+		json_object_set_new(info, "status", json_string("update"));
+		json_t *details = json_object();
+		json_object_set_new(details, "sessions", json_integer(g_atomic_int_get(&sessions_num)));
+		json_object_set_new(details, "handles", json_integer(g_atomic_int_get(&handles_num)));
+		json_object_set_new(details, "peerconnections", json_integer(janus_ice_get_peerconnection_num()));
+		json_object_set_new(details, "stats-period", json_integer(janus_ice_get_event_stats_period()));
+		json_object_set_new(info, "info", details);
+		janus_events_notify_handlers(JANUS_EVENT_TYPE_CORE, JANUS_EVENT_SUBTYPE_CORE_STARTUP, 0, info);
+	}
+	return TRUE;
+}
 
 janus_session *janus_session_create(guint64 session_id) {
 	janus_session *session = NULL;
@@ -765,6 +786,7 @@ janus_session *janus_session_create(guint64 session_id) {
 	janus_mutex_init(&session->mutex);
 	janus_mutex_lock(&sessions_mutex);
 	g_hash_table_insert(sessions, janus_uint64_dup(session->session_id), session);
+	g_atomic_int_inc(&sessions_num);
 	janus_mutex_unlock(&sessions_mutex);
 	return session;
 }
@@ -833,13 +855,15 @@ void janus_session_handles_insert(janus_session *session, janus_ice_handle *hand
 		session->ice_handles = g_hash_table_new_full(g_int64_hash, g_int64_equal, (GDestroyNotify)g_free, (GDestroyNotify)janus_ice_handle_dereference);
 	janus_refcount_increase(&handle->ref);
 	g_hash_table_insert(session->ice_handles, janus_uint64_dup(handle->handle_id), handle);
+	g_atomic_int_inc(&handles_num);
 	janus_mutex_unlock(&session->mutex);
 }
 
 gint janus_session_handles_remove(janus_session *session, janus_ice_handle *handle) {
 	janus_mutex_lock(&session->mutex);
 	gint error = janus_ice_handle_destroy(session, handle);
-	g_hash_table_remove(session->ice_handles, &handle->handle_id);
+	if(g_hash_table_remove(session->ice_handles, &handle->handle_id))
+		g_atomic_int_dec_and_test(&handles_num);
 	janus_mutex_unlock(&session->mutex);
 	return error;
 }
@@ -857,6 +881,7 @@ void janus_session_handles_clear(janus_session *session) {
 				continue;
 			janus_ice_handle_destroy(session, handle);
 			g_hash_table_iter_remove(&iter);
+			g_atomic_int_dec_and_test(&handles_num);
 		}
 	}
 	janus_mutex_unlock(&session->mutex);
@@ -1253,7 +1278,8 @@ int janus_process_incoming_request(janus_request *request) {
 			goto jsondone;
 		}
 		janus_mutex_lock(&sessions_mutex);
-		g_hash_table_remove(sessions, &session->session_id);
+		if(g_hash_table_remove(sessions, &session->session_id))
+			g_atomic_int_dec_and_test(&sessions_num);
 		janus_mutex_unlock(&sessions_mutex);
 		/* Notify the source that the session has been destroyed */
 		janus_request *source = janus_session_get_request(session);
@@ -2089,7 +2115,6 @@ int janus_process_incoming_admin_request(janus_request *request) {
 			json_object_set_new(status, "log_colors", janus_log_colors ? json_true() : json_false());
 			json_object_set_new(status, "locking_debug", lock_debug ? json_true() : json_false());
 			json_object_set_new(status, "refcount_debug", refcount_debug ? json_true() : json_false());
-			json_object_set_new(status, "libnice_debug", janus_ice_is_ice_debugging_enabled() ? json_true() : json_false());
 			json_object_set_new(status, "min_nack_queue", json_integer(janus_get_min_nack_queue()));
 			json_object_set_new(status, "nack-optimizations", janus_is_nack_optimizations_enabled() ? json_true() : json_false());
 			json_object_set_new(status, "no_media_timer", json_integer(janus_get_no_media_timer()));
@@ -2216,27 +2241,6 @@ int janus_process_incoming_admin_request(janus_request *request) {
 			/* Prepare JSON reply */
 			json_t *reply = janus_create_message("success", 0, transaction_text);
 			json_object_set_new(reply, "log_colors", janus_log_colors ? json_true() : json_false());
-			/* Send the success reply */
-			ret = janus_process_success(request, reply);
-			goto jsondone;
-		} else if(!strcasecmp(message_text, "set_libnice_debug")) {
-			/* Enable/disable the libnice debugging (http://nice.freedesktop.org/libnice/libnice-Debug-messages.html) */
-			JANUS_VALIDATE_JSON_OBJECT(root, debug_parameters,
-				error_code, error_cause, FALSE,
-				JANUS_ERROR_MISSING_MANDATORY_ELEMENT, JANUS_ERROR_INVALID_ELEMENT_TYPE);
-			if(error_code != 0) {
-				ret = janus_process_error_string(request, session_id, transaction_text, error_code, error_cause);
-				goto jsondone;
-			}
-			json_t *debug = json_object_get(root, "debug");
-			if(json_is_true(debug)) {
-				janus_ice_debugging_enable();
-			} else {
-				janus_ice_debugging_disable();
-			}
-			/* Prepare JSON reply */
-			json_t *reply = janus_create_message("success", 0, transaction_text);
-			json_object_set_new(reply, "libnice_debug", janus_ice_is_ice_debugging_enabled() ? json_true() : json_false());
 			/* Send the success reply */
 			ret = janus_process_success(request, reply);
 			goto jsondone;
@@ -2762,7 +2766,8 @@ int janus_process_incoming_admin_request(janus_request *request) {
 		/* Session-related */
 		if(!strcasecmp(message_text, "destroy_session")) {
 			janus_mutex_lock(&sessions_mutex);
-			g_hash_table_remove(sessions, &session->session_id);
+			if(g_hash_table_remove(sessions, &session->session_id))
+				g_atomic_int_dec_and_test(&sessions_num);
 			janus_mutex_unlock(&sessions_mutex);
 			/* Notify the source that the session has been destroyed */
 			janus_request *source = janus_session_get_request(session);
@@ -3349,6 +3354,8 @@ json_t *janus_admin_component_summary(janus_ice_component *component) {
 #endif
 	}
 	json_object_set_new(c, "dtls", d);
+	if(g_atomic_int_get(&component->too_large) > 0)
+		json_object_set_new(c, "too-large", json_integer(g_atomic_int_get(&component->too_large)));
 	json_object_set_new(c, "in_stats", in_stats);
 	json_object_set_new(c, "out_stats", out_stats);
 	return c;
@@ -3396,8 +3403,13 @@ void janus_transport_gone(janus_transport *plugin, janus_transport_session *tran
 				JANUS_LOG(LOG_VERB, "  -- Session %"SCNu64" will be over if not reclaimed\n", session->session_id);
 				JANUS_LOG(LOG_VERB, "  -- Marking Session %"SCNu64" as over\n", session->session_id);
 				if(reclaim_session_timeout < 1) { /* Reclaim session timeouts are disabled */
+					/* Notify event handlers, if needed */
+					if(janus_events_is_enabled())
+						janus_events_notify_handlers(JANUS_EVENT_TYPE_SESSION, JANUS_EVENT_SUBTYPE_NONE,
+							session->session_id, "destroyed", NULL);
 					/* Mark the session as destroyed */
 					janus_session_destroy(session);
+					g_atomic_int_dec_and_test(&sessions_num);
 					g_hash_table_iter_remove(&iter);
 				} else {
 					/* Set flag for transport_gone. The Janus sessions watchdog will clean this up if not reclaimed */
@@ -4214,13 +4226,21 @@ gint main(int argc, char *argv[])
 	core_limits.rlim_cur = core_limits.rlim_max = RLIM_INFINITY;
 	setrlimit(RLIMIT_CORE, &core_limits);
 
-	g_print("Janus commit: %s\n", janus_build_git_sha);
-	g_print("Compiled on:  %s\n\n", janus_build_git_time);
+	janus_mark_started();
+
+	JANUS_PRINT("Janus version: %d (%s)\n", janus_version, janus_version_string);
+	JANUS_PRINT("Janus commit: %s\n", janus_build_git_sha);
+	JANUS_PRINT("Compiled on:  %s\n\n", janus_build_git_time);
 
 	struct gengetopt_args_info args_info;
 	/* Let's call our cmdline parser */
 	if(cmdline_parser(argc, argv, &args_info) != 0)
 		exit(1);
+
+	/* Handle SIGINT (CTRL-C), SIGTERM (from service managers) */
+	signal(SIGINT, janus_handle_signal);
+	signal(SIGTERM, janus_handle_signal);
+	atexit(janus_termination_handler);
 
 	/* Any configuration to open? */
 	if(args_info.config_given) {
@@ -4238,7 +4258,7 @@ gint main(int argc, char *argv[])
 	}
 	if((config = janus_config_parse(config_file)) == NULL) {
 		/* We failed to load the libconfig configuration file, let's try the INI */
-		g_print("Failed to load %s, trying the INI instead...\n", config_file);
+		JANUS_PRINT("Failed to load %s, trying the INI instead...\n", config_file);
 		g_free(config_file);
 		char file[255];
 		g_snprintf(file, 255, "%s/janus.cfg", configs_folder);
@@ -4246,10 +4266,10 @@ gint main(int argc, char *argv[])
 		if((config = janus_config_parse(config_file)) == NULL) {
 			if(args_info.config_given) {
 				/* We only give up if the configuration file was explicitly provided */
-				g_print("Error reading configuration from %s\n", config_file);
+				JANUS_PRINT("Error reading configuration from %s\n", config_file);
 				exit(1);
 			}
-			g_print("Error reading/parsing the configuration file in %s, going on with the defaults and the command line arguments\n",
+			JANUS_PRINT("Error reading/parsing the configuration file in %s, going on with the defaults and the command line arguments\n",
 				configs_folder);
 			config = janus_config_create("janus.cfg");
 			if(config == NULL) {
@@ -4323,18 +4343,18 @@ gint main(int argc, char *argv[])
 	}
 	/* Daemonize now, if we need to */
 	if(daemonize) {
-		g_print("Running Janus as a daemon\n");
+		JANUS_PRINT("Running Janus as a daemon\n");
 
 		/* Create a pipe for parent<->child communication during the startup phase */
 		if(pipe(pipefd) == -1) {
-			g_print("pipe error!\n");
+			JANUS_PRINT("pipe error!\n");
 			exit(1);
 		}
 
 		/* Fork off the parent process */
 		pid_t pid = fork();
 		if(pid < 0) {
-			g_print("Fork error!\n");
+			JANUS_PRINT("Fork error!\n");
 			exit(1);
 		}
 		if(pid > 0) {
@@ -4363,7 +4383,7 @@ gint main(int argc, char *argv[])
 
 			/* Leave the parent and return the exit code we received from the child */
 			if(code)
-				g_print("Error launching Janus (error code %d), check the logs for more details\n", code);
+				JANUS_PRINT("Error launching Janus (error code %d), check the logs for more details\n", code);
 			exit(code);
 		}
 		/* Child here */
@@ -4375,13 +4395,13 @@ gint main(int argc, char *argv[])
 		/* Create a new SID for the child process */
 		pid_t sid = setsid();
 		if(sid < 0) {
-			g_print("Error setting SID!\n");
+			JANUS_PRINT("Error setting SID!\n");
 			exit(1);
 		}
 		/* Change the current working directory */
 		const char *cwd = (args_info.cwd_path_given) ? args_info.cwd_path_arg : "/";
 		if((chdir(cwd)) < 0) {
-			g_print("Error changing the current working directory!\n");
+			JANUS_PRINT("Error changing the current working directory!\n");
 			exit(1);
 		}
 		/* We close stdin/stdout/stderr when initializing the logger */
@@ -4401,10 +4421,7 @@ gint main(int argc, char *argv[])
 	if(item && item->value && janus_is_true(item->value))
 		exit_on_dl_error = TRUE;
 
-	/* Initialize logger */
-	if(janus_log_init(daemonize, use_stdout, logfile) < 0)
-		exit(1);
-	/* Check if there are external loggers we need to load as well */
+	/* Check if there are external loggers we need to load */
 	const char *path = NULL;
 	DIR *dir = NULL;
 	/* External loggers are usually disabled by default: they need to be enabled in the configuration */
@@ -4459,16 +4476,16 @@ gint main(int argc, char *argv[])
 			memset(eventpath, 0, 1024);
 			g_snprintf(eventpath, 1024, "%s/%s", path, eventent->d_name);
 			void *event = dlopen(eventpath, RTLD_NOW | RTLD_GLOBAL);
-			if (!event) {
+			if(!event) {
 				JANUS_LOG(exit_on_dl_error ? LOG_FATAL : LOG_ERR, "\tCouldn't load logger plugin '%s': %s\n", eventent->d_name, dlerror());
-				if (exit_on_dl_error)
+				if(exit_on_dl_error)
 					exit(1);
 			} else {
 				create_l *create = (create_l*) dlsym(event, "create");
 				const char *dlsym_error = dlerror();
-				if (dlsym_error) {
+				if(dlsym_error) {
 					JANUS_LOG(exit_on_dl_error ? LOG_FATAL : LOG_ERR, "\tCouldn't load symbol 'create': %s\n", dlsym_error);
-					if (exit_on_dl_error)
+					if(exit_on_dl_error)
 						exit(1);
 					continue;
 				}
@@ -4512,16 +4529,14 @@ gint main(int argc, char *argv[])
 	if(disabled_loggers != NULL)
 		g_strfreev(disabled_loggers);
 	disabled_loggers = NULL;
-	janus_log_set_loggers(loggers);
+
+	/* Initialize logger */
+	if(janus_log_init(daemonize, use_stdout, logfile, loggers) < 0)
+		exit(1);
 
 	JANUS_PRINT("---------------------------------------------------\n");
 	JANUS_PRINT("  Starting Meetecho Janus (WebRTC Server) v%s\n", janus_version_string);
 	JANUS_PRINT("---------------------------------------------------\n\n");
-
-	/* Handle SIGINT (CTRL-C), SIGTERM (from service managers) */
-	signal(SIGINT, janus_handle_signal);
-	signal(SIGTERM, janus_handle_signal);
-	atexit(janus_termination_handler);
 
 	/* Setup Glib */
 #if !GLIB_CHECK_VERSION(2, 36, 0)
@@ -4538,6 +4553,28 @@ gint main(int argc, char *argv[])
 		else if(args_info.debug_level_arg > LOG_MAX)
 			args_info.debug_level_arg = LOG_MAX;
 		janus_log_level = args_info.debug_level_arg;
+	}
+
+	/* Let's check if there are limits we need to check */
+	uint64_t check_openfiles_limit = 0;
+	if(args_info.check_openfiles_limit_given && args_info.check_openfiles_limit_arg > 0) {
+		check_openfiles_limit = args_info.check_openfiles_limit_arg;
+	} else {
+		janus_config_item *item = janus_config_get(config, config_general, janus_config_type_item, "check_openfiles_limit");
+		if(item && item->value)
+			check_openfiles_limit = g_ascii_strtoull(item->value, 0, 10);
+	}
+	if(check_openfiles_limit > 0) {
+		struct rlimit limits = { 0 };
+		if(getrlimit(RLIMIT_NOFILE, &limits) < 0) {
+			JANUS_LOG(LOG_FATAL, "Error calling getrlimit: %d (%s)\n", errno, g_strerror(errno));
+			exit(1);
+		}
+		if(limits.rlim_cur < check_openfiles_limit) {
+			JANUS_LOG(LOG_FATAL, "Maximum number of open file descriptors check failed: %"SCNi64" < %"SCNi64" (hard limit: %"SCNi64")\n",
+				limits.rlim_cur, check_openfiles_limit, limits.rlim_max);
+			exit(1);
+		}
 	}
 
 	/* Any PID we need to create? */
@@ -4651,9 +4688,6 @@ gint main(int argc, char *argv[])
 	}
 	if(args_info.ice_ignore_list_given) {
 		janus_config_add(config, config_nat, janus_config_item_create("ice_ignore_list", args_info.ice_ignore_list_arg));
-	}
-	if(args_info.libnice_debug_given) {
-		janus_config_add(config, config_nat, janus_config_item_create("nice_debug", "true"));
 	}
 	if(args_info.full_trickle_given) {
 		janus_config_add(config, config_nat, janus_config_item_create("full_trickle", "true"));
@@ -5047,9 +5081,15 @@ gint main(int argc, char *argv[])
 		janus_ice_set_nomination_mode(item->value);
 #endif
 	}
+	item = janus_config_get(config, config_nat, janus_config_type_item, "ice_consent_freshness");
+	if(item && item->value)
+		janus_ice_set_consent_freshness_enabled(janus_is_true(item->value));
 	item = janus_config_get(config, config_nat, janus_config_type_item, "ice_keepalive_conncheck");
 	if(item && item->value)
 		janus_ice_set_keepalive_conncheck_enabled(janus_is_true(item->value));
+	item = janus_config_get(config, config_nat, janus_config_type_item, "hangup_on_failed");
+	if(item && item->value)
+		janus_ice_set_hangup_on_failed_enabled(janus_is_true(item->value));
 	if(janus_ice_set_turn_server(turn_server, turn_port, turn_type, turn_user, turn_pwd) < 0) {
 		if(!ignore_unreachable_ice_server) {
 			JANUS_LOG(LOG_FATAL, "Invalid TURN address %s:%u\n", turn_server, turn_port);
@@ -5071,7 +5111,7 @@ gint main(int argc, char *argv[])
 	item = janus_config_get(config, config_nat, janus_config_type_item, "nice_debug");
 	if(item && item->value && janus_is_true(item->value)) {
 		/* Enable libnice debugging */
-		janus_ice_debugging_enable();
+		JANUS_LOG(LOG_WARN,"nice_debug option is NOT SUPPORTED ANYMORE! Please set NICE_DEBUG and G_MESSAGES_DEBUG env vars when starting Janus\n");
 	}
 	if(stun_server == NULL && turn_server == NULL) {
 		/* No STUN and TURN server provided for Janus: make sure it isn't on a private address */
@@ -5240,9 +5280,13 @@ gint main(int argc, char *argv[])
 	JANUS_LOG(LOG_WARN, "Data Channels support not compiled\n");
 #endif
 
+	/* Initialize the RTP forwarders functionality */
+	if(janus_rtp_forwarders_init() < 0) {
+		exit(1);
+	}
+
 	/* Sessions */
 	sessions = g_hash_table_new_full(g_int64_hash, g_int64_equal, (GDestroyNotify)g_free, NULL);
-	janus_mutex_init(&sessions_mutex);
 	/* Start the sessions timeout watchdog */
 	sessions_watchdog_context = g_main_context_new();
 	GMainLoop *watchdog_loop = g_main_loop_new(sessions_watchdog_context, FALSE);
@@ -5437,6 +5481,11 @@ gint main(int argc, char *argv[])
 			JANUS_LOG(LOG_FATAL, "Error initializing the Event handlers mechanism...\n");
 			exit(1);
 		}
+		/* Send a status event every once in a while */
+		GSource *timeout_source = g_timeout_source_new_seconds(15);
+		g_source_set_callback(timeout_source, janus_status_sessions, sessions_watchdog_context, NULL);
+		g_source_attach(timeout_source, sessions_watchdog_context);
+		g_source_unref(timeout_source);
 	}
 
 	/* Load plugins */
@@ -5743,11 +5792,11 @@ gint main(int argc, char *argv[])
 	JANUS_LOG(LOG_INFO, "Closing transport plugins:\n");
 	if(transports != NULL && g_hash_table_size(transports) > 0) {
 		g_hash_table_foreach(transports, janus_transport_close, NULL);
-		g_hash_table_destroy(transports);
+		g_clear_pointer(&transports, g_hash_table_destroy);
 	}
 	if(transports_so != NULL && g_hash_table_size(transports_so) > 0) {
 		g_hash_table_foreach(transports_so, janus_transportso_close, NULL);
-		g_hash_table_destroy(transports_so);
+		g_clear_pointer(&transports_so, g_hash_table_destroy);
 	}
 	/* Get rid of requests tasks and thread too */
 	g_thread_pool_free(tasks, FALSE, FALSE);
@@ -5768,27 +5817,28 @@ gint main(int argc, char *argv[])
 	JANUS_LOG(LOG_INFO, "De-initializing SCTP...\n");
 	janus_sctp_deinit();
 #endif
+	janus_rtp_forwarders_deinit();
 	janus_auth_deinit();
 
 	JANUS_LOG(LOG_INFO, "Closing plugins:\n");
 	if(plugins != NULL && g_hash_table_size(plugins) > 0) {
 		g_hash_table_foreach(plugins, janus_plugin_close, NULL);
-		g_hash_table_destroy(plugins);
+		g_clear_pointer(&plugins, g_hash_table_destroy);
 	}
 	if(plugins_so != NULL && g_hash_table_size(plugins_so) > 0) {
 		g_hash_table_foreach(plugins_so, janus_pluginso_close, NULL);
-		g_hash_table_destroy(plugins_so);
+		g_clear_pointer(&plugins_so, g_hash_table_destroy);
 	}
 
 	JANUS_LOG(LOG_INFO, "Closing event handlers:\n");
 	janus_events_deinit();
 	if(eventhandlers != NULL && g_hash_table_size(eventhandlers) > 0) {
 		g_hash_table_foreach(eventhandlers, janus_eventhandler_close, NULL);
-		g_hash_table_destroy(eventhandlers);
+		g_clear_pointer(&eventhandlers, g_hash_table_destroy);
 	}
 	if(eventhandlers_so != NULL && g_hash_table_size(eventhandlers_so) > 0) {
 		g_hash_table_foreach(eventhandlers_so, janus_eventhandlerso_close, NULL);
-		g_hash_table_destroy(eventhandlers_so);
+		g_clear_pointer(&eventhandlers_so, g_hash_table_destroy);
 	}
 
 	janus_recorder_deinit();
@@ -5797,7 +5847,7 @@ gint main(int argc, char *argv[])
 		g_list_free(public_ips);
 	}
 	if (public_ips_table) {
-		g_hash_table_destroy(public_ips_table);
+		g_clear_pointer(&public_ips_table, g_hash_table_destroy);
 	}
 
 	if(janus_ice_get_static_event_loops() > 0)

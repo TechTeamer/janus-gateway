@@ -113,10 +113,10 @@ static gboolean notify_events = TRUE;
 #if (LWS_LIBRARY_VERSION_MAJOR >= 3)
 static GHashTable *clients = NULL, *writable_clients = NULL;
 #endif
-static janus_mutex writable_mutex;
+static janus_mutex writable_mutex = JANUS_MUTEX_INITIALIZER;
 
 /* JSON serialization options */
-static size_t json_format = JSON_INDENT(3) | JSON_PRESERVE_ORDER;
+static size_t json_format = JSON_COMPACT | JSON_PRESERVE_ORDER;
 
 /* Parameter validation (for tweaking and queries via Admin API) */
 static struct janus_json_parameter request_parameters[] = {
@@ -333,35 +333,49 @@ static gboolean enforce_cors = FALSE;
 /* WebSockets ACL list for both Janus and Admin API */
 static GList *janus_websockets_access_list = NULL, *janus_websockets_admin_access_list = NULL;
 static gboolean janus_websockets_check_xff = FALSE, janus_websockets_admin_check_xff = FALSE;
-static janus_mutex access_list_mutex;
+static janus_mutex access_list_mutex = JANUS_MUTEX_INITIALIZER;
 static void janus_websockets_allow_address(const char *ip, gboolean admin) {
 	if(ip == NULL)
 		return;
 	/* Is this an IP or an interface? */
 	janus_mutex_lock(&access_list_mutex);
-	if(!admin)
-		janus_websockets_access_list = g_list_append(janus_websockets_access_list, (gpointer)ip);
-	else
-		janus_websockets_admin_access_list = g_list_append(janus_websockets_admin_access_list, (gpointer)ip);
+	if(!admin) {
+		janus_websockets_access_list = g_list_append(janus_websockets_access_list, g_strdup(ip));
+		if(strstr(ip, ":") == NULL) {
+			/* Add a ::ffff: prefixed address too, which we may need if the server
+			 * supports IPV6 too, and so IPv4 addresses will look different */
+			char pfx_ip[50];
+			g_snprintf(pfx_ip, sizeof(pfx_ip), "::ffff:%s", ip);
+			janus_websockets_access_list = g_list_append(janus_websockets_access_list, g_strdup(pfx_ip));
+		}
+	} else {
+		janus_websockets_admin_access_list = g_list_append(janus_websockets_admin_access_list, g_strdup(ip));
+		if(strstr(ip, ":") == NULL) {
+			/* Add a ::ffff: prefixed address too, which we may need if the server
+			 * supports IPV6 too, and so IPv4 addresses will look different */
+			char pfx_ip[50];
+			g_snprintf(pfx_ip, sizeof(pfx_ip), "::ffff:%s", ip);
+			janus_websockets_admin_access_list = g_list_append(janus_websockets_admin_access_list, g_strdup(pfx_ip));
+		}
+	}
 	janus_mutex_unlock(&access_list_mutex);
 }
 static gboolean janus_websockets_is_allowed(const char *ip, gboolean admin) {
-	JANUS_LOG(LOG_VERB, "Checking if %s is allowed to contact %s interface\n", ip, admin ? "admin" : "janus");
 	if(ip == NULL)
 		return FALSE;
+	janus_mutex_lock(&access_list_mutex);
 	if(!admin && janus_websockets_access_list == NULL) {
-		JANUS_LOG(LOG_VERB, "Yep\n");
+		janus_mutex_unlock(&access_list_mutex);
 		return TRUE;
 	}
 	if(admin && janus_websockets_admin_access_list == NULL) {
-		JANUS_LOG(LOG_VERB, "Yeah\n");
+		janus_mutex_unlock(&access_list_mutex);
 		return TRUE;
 	}
-	janus_mutex_lock(&access_list_mutex);
 	GList *temp = admin ? janus_websockets_admin_access_list : janus_websockets_access_list;
 	while(temp) {
 		const char *allowed = (const char *)temp->data;
-		if(allowed != NULL && strstr(ip, allowed)) {
+		if(allowed != NULL && strstr(ip, allowed) == ip) {
 			janus_mutex_unlock(&access_list_mutex);
 			return TRUE;
 		}
@@ -416,9 +430,12 @@ static struct lws_vhost* janus_websockets_create_ws_server(
 			ipv4_only = 1;
 		char *iface = janus_websockets_get_interface_name(ip);
 		if(iface == NULL) {
-			JANUS_LOG(LOG_WARN, "No interface associated with %s? Falling back to no interface...\n", ip);
+			JANUS_LOG(LOG_FATAL, "No interface associated with %s?\n", ip);
+			return NULL;
 		}
-		ip = iface;
+		else {
+			g_free(iface);
+		}
 	}
 
 	g_snprintf(item_name, 255, "%s_unix", prefix);
@@ -508,7 +525,6 @@ static struct lws_vhost* janus_websockets_create_ws_server(
 	} else {
 		JANUS_LOG(LOG_INFO, "%s server started (port %d)...\n", name, wsport);
 	}
-	g_free(ip);
 	return vhost;
 }
 
@@ -571,8 +587,8 @@ int janus_websockets_init(janus_transport_callbacks *callback, const char *confi
 				/* Compact, so no spaces between separators */
 				json_format = JSON_COMPACT | JSON_PRESERVE_ORDER;
 			} else {
-				JANUS_LOG(LOG_WARN, "Unsupported JSON format option '%s', using default (indented)\n", item->value);
-				json_format = JSON_INDENT(3) | JSON_PRESERVE_ORDER;
+				JANUS_LOG(LOG_WARN, "Unsupported JSON format option '%s', using default (compact)\n", item->value);
+				json_format = JSON_COMPACT | JSON_PRESERVE_ORDER;
 			}
 		}
 
@@ -773,7 +789,6 @@ int janus_websockets_init(janus_transport_callbacks *callback, const char *confi
 	clients = g_hash_table_new(NULL, NULL);
 	writable_clients = g_hash_table_new(NULL, NULL);
 #endif
-	janus_mutex_init(&writable_mutex);
 
 	g_atomic_int_set(&initialized, 1);
 
@@ -823,6 +838,9 @@ void janus_websockets_destroy(void) {
 	writable_clients = NULL;
 	janus_mutex_unlock(&writable_mutex);
 #endif
+
+	g_list_free_full(janus_websockets_access_list, (GDestroyNotify)g_free);
+	g_list_free_full(janus_websockets_admin_access_list, (GDestroyNotify)g_free);
 
 	g_atomic_int_set(&initialized, 0);
 	g_atomic_int_set(&stopping, 0);
@@ -1351,12 +1369,14 @@ static int janus_websockets_common_callback(
 					while (incoming_curr < incoming_end && isspace(*incoming_curr))
 						incoming_curr++;
 					if(incoming_curr == incoming_end) {
-						/* Process messages in order */
-						json_t **msg = message_buffer;
-						json_t **msg_end = message_buffer + message_buffer_count;
-						while(msg != msg_end) {
-							/* Notify the core, no error since we know there weren't any */
-							gateway->incoming_request(&janus_websockets_transport, ws_client->ts, NULL, admin, *msg++, NULL);
+						if(message_buffer != NULL) {
+							/* Process messages in order */
+							json_t **msg = message_buffer;
+							json_t **msg_end = message_buffer + message_buffer_count;
+							while(msg != msg_end) {
+								/* Notify the core, no error since we know there weren't any */
+								gateway->incoming_request(&janus_websockets_transport, ws_client->ts, NULL, admin, *msg++, NULL);
+							}
 						}
 						/* Notify the core, no error since we know there weren't any */
 						gateway->incoming_request(&janus_websockets_transport, ws_client->ts, NULL, admin, message, NULL);
@@ -1367,11 +1387,13 @@ static int janus_websockets_common_callback(
 						message_buffer[message_buffer_count++] = message;
 					}
 				} else {
-					/* Release any buffered messages */
-					json_t **msg = message_buffer;
-					json_t **msg_end = message_buffer + message_buffer_count;
-					while(msg != msg_end) {
-						json_decref(*msg++);
+					if(message_buffer != NULL) {
+						/* Release any buffered messages */
+						json_t **msg = message_buffer;
+						json_t **msg_end = message_buffer + message_buffer_count;
+						while(msg != msg_end) {
+							json_decref(*msg++);
+						}
 					}
 					/* Notify the core, passing the error since we have no message */
 					gateway->incoming_request(&janus_websockets_transport, ws_client->ts, NULL, admin, NULL, &error);

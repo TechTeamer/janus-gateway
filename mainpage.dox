@@ -44,7 +44,7 @@
  * reference should you be interested in writing a new plugin from
  * scratch (and you're definitely welcome to!). A \ref pluginapi to
  * create new plugins, or understand how they're conceived, is documented
- * as well. A documentation on the available API tranports and the
+ * as well. A documentation on the available API transports and the
  * HTTP/WebSocket JavaScript API to use Janus and the plugins it
  * makes available in your web application can be found in the \ref JS
  * and \ref rest pages. New API transports can be created referring to
@@ -75,7 +75,7 @@
  *
  * \section copyright Copyright and author
  *
- * Janus WebRTC Server © 2014-2023 <a href="https://www.meetecho.com/">Meetecho</a> (https://www.meetecho.com/)
+ * Janus WebRTC Server © 2014-2026 <a href="https://www.meetecho.com/">Meetecho</a> (https://www.meetecho.com/)
  *
  * \author Lorenzo Miniero <lorenzo@meetecho.com> ( \ref CREDITS )
  *
@@ -107,8 +107,8 @@
  * - \b paho.mqtt.c: https://eclipse.org/paho/clients/c (\c optional, v1.1.0 for MQTT v3.1 & v3.1.1 or v1.3.0 for MQTT v5)
  * - \b nanomsg: https://nanomsg.org/ (\c optional, Nanomsg)
  * - \b Sofia-SIP: https://github.com/freeswitch/sofia-sip (\c optional, only needed for the SIP plugin)
- * - \b libopus: http://opus-codec.org/ (\c optional, only needed for the bridge plugin)
- * - \b libogg: http://xiph.org/ogg/ (\c optional, only needed for the voicemail plugin)
+ * - \b libopus: http://opus-codec.org/ (\c optional, only needed for the AudioBridge plugin)
+ * - \b libogg: http://xiph.org/ogg/ (\c optional, only needed for the AudioBridge and Streaming plugins)
  * - \b libcurl: https://curl.haxx.se/libcurl/ (\c optional, only needed for the TURN REST API,
  * RTSP support in the Streaming plugin and the sample Event Handler plugin)
  * - \b zlib: https://zlib.net/ (gzip compression utility)
@@ -348,6 +348,9 @@ var janus = new Janus(
  * when WebRTC is actually up and running between you and Janus (e.g., to notify
  * a user they're actually now active in a conference); notice that in case
  * of <b>false</b> a reason string may be present as an optional parameter;
+ * 		- \c connectionState: this callback is triggered when the connection state for the
+ * PeerConnection associated to the handle changes: the argument of the callback
+ * is the new state as a string (e.g., "connected" or "failed");
  * 		- \c iceState: this callback is triggered when the ICE state for the
  * PeerConnection associated to the handle changes: the argument of the callback
  * is the new state as a string (e.g., "connected" or "failed");
@@ -361,7 +364,7 @@ var janus = new Janus(
  * problems on the media path (e.g., media never started, or stopped at some time);
  * 		- \c slowLink: this callback is triggered when Janus reports trouble
  * either sending or receiving media on the specified PeerConnection, typically
- * as a consequence of too many NACKs received from/sent to the user in the
+ * as a consequence of too lost packets detected to/from the user in the
  * last second: for instance, a \c slowLink with uplink=<b>true</b> means
  * you notified several missing packets from Janus, while uplink=<b>false</b>
  * means Janus is not receiving all your packets; useful to figure out when
@@ -865,7 +868,7 @@ echotest.createOffer({
  * \section js-webpack Using janus.js directly with Webpack and other bundlers
  *
  * Generating a converted version of \c janus.js and copying it to your project is not always the best
- * solution. In many situations it may be prefered to let your JavaScript module bundler (e.g.
+ * solution. In many situations it may be preferred to let your JavaScript module bundler (e.g.
  * <a href="https://webpack.js.org">Webpack</a>) grab the file directly from the official Janus repository.
  * Doing that you can manage \c janus.js just like any other dependency coming from Github or the npm Registry,
  * getting rid of the manual copy step and letting the bundler take care of version management, updates
@@ -1026,7 +1029,7 @@ export const initialiseJanusLibrary = () => Janus.init({dependencies: setupDeps(
  *
  * The \c options argument may contain the following keys:
  *
- * -# \c timeout: a timeout in miliseconds which should be imposed on the request.
+ * -# \c timeout: a timeout in milliseconds which should be imposed on the request.
  *    The \c httpAPICall implementation is required to implement support for imposing timeouts
  *    on HTTP API requests.
  * -# \c body: payload to include as body of the outgoing HTTP request.
@@ -1696,7 +1699,7 @@ GET http://host:port/janus/<sessionid>?maxev=5
 	"session_id" : <the session identifier>,
 	"sender" : <the handle identifier>
 	"uplink" : true,
-	"nacks" : <number of NACKs in the last second>
+	"lost" : <number of lost packets in the last second>
 }
 \endverbatim
  *
@@ -2301,7 +2304,6 @@ const token = getJanusToken('janus', ['janus.plugin.videoroom']);
  * - \c set_refcount_debug: selectively enable/disable a live debugging of
  * the reference counters in Janus on the fly (useful if you're experiencing
  * memory leaks in the Janus structures and want to investigate them);
- * - \c set_libnice_debug: selectively enable/disable libnice debugging;
  * - \c set_min_nack_queue: change the value of the min NACK queue window;
  * - \c set_no_media_timer: change the value of the no-media timer property;
  * - \c set_slowlink_threshold: change the value of the slowlink-threshold property.
@@ -2637,7 +2639,7 @@ else
 	server = "https://" + window.location.hostname + ":8089/janus";
  \endverbatim
  *
- * that is evaulate the right address to use at runtime.
+ * that is evaluate the right address to use at runtime.
  *
  * Anyway, there's a much easier way to address these scenarios, which
  * is explained in the next section.
@@ -2902,7 +2904,7 @@ WantedBy=multi-user.target
  * \note Remember to adjust the path in ExecStart to match the Janus binary path.
  *
  * \warning Please beware that, per the default \c RateLimitInterval and
- * and \c RateLimitBurst values in the default sytemd configuration, logger
+ * and \c RateLimitBurst values in the default systemd configuration, logger
  * messages are dropped if they arrive faster than ~33 per second. You
  * may want to configure them accordingly, or otherwise Janus log messages
  * may be missing. To fix this, setting <code>RateLimitInterval=1s</code>
@@ -3070,6 +3072,15 @@ sudo supervisorctl update
  * bugs and the like, as it can provide information about the values of
  * variables when they were used and the application crashed.
  *
+ * First of all make sure that debugging symbols are enabled by reconfiguring Janus like this:
+ *
+ \verbatim
+CFLAGS="-Og -g3 -ggdb3 -fno-omit-frame-pointer" ./configure --prefix=/opt/janus
+ \endverbatim
+ *
+ * Once done configuring, do a \c make \c clean (to make sure
+ * everything is recompiled from scratch) and then a \c make and \c make \c install.
+ *
  * When Janus crashes, you should get a core dump file somewhere. This is
  * a recorded state of the application memory at the time of crashing, and
  * so a backtrace of what lead to an issue can help. You can open such
@@ -3104,7 +3115,7 @@ gdb bt
  * Once you've installed libasan, reconfigure Janus like this:
  *
  \verbatim
-CFLAGS="-O1 -g3 -ggdb3 -fno-omit-frame-pointer -fsanitize=address -fno-sanitize-recover=all -fsanitize-address-use-after-scope" LDFLAGS="-fsanitize=address" ./configure --prefix=/opt/janus
+CFLAGS="-O0 -g3 -ggdb3 -fno-omit-frame-pointer -fno-optimize-sibling-calls -fsanitize=address -fsanitize-address-use-after-scope -fno-sanitize-recover=all" LDFLAGS="-fsanitize=address" ./configure --prefix=/opt/janus
  \endverbatim
  *
  * Of course you're free to add whatever additional configuration parameter
@@ -3514,7 +3525,7 @@ ldd janus | grep asan
  * <tr>
  * 		<td>JavaScript/node</td>
  * 		<td><a href="https://github.com/mquander">Marshall Quander</a></td>
- * 		<td><a href="https://github.com/mquander/minijanus.js">minijanus.js</a></td>
+ * 		<td><a href="https://github.com/networked-aframe/minijanus.js">minijanus.js</a></td>
  * 		<td>A super-simplistic and -minimal wrapper for talking to the Janus signalling API</td>
  * </tr>
  * <tr>
@@ -3696,7 +3707,7 @@ ldd janus | grep asan
  * </tr>
  * <tr>
  * 		<td><a href="https://github.com/mquander">Marshall Quander</a></td>
- * 		<td><a href="https://github.com/mquander/janus-plugin-rs">janus-plugin-rs</a></td>
+ * 		<td><a href="https://github.com/networked-aframe/janus-plugin-rs">janus-plugin-rs</a></td>
  * 		<td>Rust bindings and wrappers for creating Janus plugins in Rust</td>
  * </tr>
  * </table>
@@ -3834,7 +3845,7 @@ ldd janus | grep asan
 
 /*! \page CREDITS Credits
  *
- * Janus WebRTC Server © 2014-2023 <a href="https://www.meetecho.com/">Meetecho</a> (https://www.meetecho.com/)
+ * Janus WebRTC Server © 2014-2026 <a href="https://www.meetecho.com/">Meetecho</a> (https://www.meetecho.com/)
  *
  * \b Author:
  *         Lorenzo Miniero <lorenzo@meetecho.com>
@@ -3856,8 +3867,8 @@ ldd janus | grep asan
  * - \b paho.mqtt.c: https://eclipse.org/paho/clients/c (\c optional, v1.1.0 for MQTT v3.1 & v3.1.1 or v1.3.0 for MQTT v5)
  * - \b nanomsg: https://nanomsg.org/ (\c optional, Nanomsg)
  * - \b Sofia-SIP: https://github.com/freeswitch/sofia-sip (\c optional, only needed for the SIP plugin)
- * - \b libopus: http://opus-codec.org/ (\c optional, only needed for the bridge plugin)
- * - \b libogg: http://xiph.org/ogg/ (\c optional, only needed for the voicemail plugin)
+ * - \b libopus: http://opus-codec.org/ (\c optional, only needed for the AudioBridge plugin)
+ * - \b libogg: http://xiph.org/ogg/ (\c optional, only needed for the AudioBridge and Streaming plugins)
  * - \b libcurl: https://curl.haxx.se/libcurl/ (\c optional, only needed for the TURN REST API,
  * RTSP support in the Streaming plugin and the sample Event Handler plugin)
  * - \b zlib: https://zlib.net/ (gzip compression utility)
@@ -3983,7 +3994,7 @@ ldd janus | grep asan
  *    When we chose the name, we wanted it to sound like
  *    <a href="https://www.youtube.com/watch?v=TkgDOMSv9PE">this</a>,
  *    which means \a awesome! in Italian. The extra H was a mistake on our
- *    side, as obviously \a echo is pronouced differently than \a eco! Long
+ *    side, as obviously \a echo is pronounced differently than \a eco! Long
  *    story short, it doesn't really matter how you pronounce it: just
  *    do it and help us be famous! :-)\n\n
  *    .
@@ -4042,9 +4053,21 @@ ldd janus | grep asan
  *    - Presentation on Janode, the official Janus nodejs SDK, at <a href="https://2021.commcon.xyz/talks/janode-the-janus-node-js-sdk">CommCon 2021</a>;
  *    - Presentation on WebRTC broadcasting with WHIP and how to scale at <a href="https://fosdem.org/2022/schedule/event/rtc_whip/">FOSDEM 2022</a>;
  *    - Presentation on SIP call transfers and multiple calls at <a href="https://youtu.be/vSFZe8SsTbM?t=6379">OpenSIPS 2022</a>;
- *    - Presentation on SFU/VideoRoom cascading at <a href="https://www.youtube.com/watch?v=z7SvEQcDEgM">IIT RTC 2022</a>. \n\n
+ *    - Presentation on SFU/VideoRoom cascading at <a href="https://www.youtube.com/watch?v=z7SvEQcDEgM">IIT RTC 2022</a>;
+ *    - Presentation on Social audio applications with Janus at <a href="https://fosdem.org/2023/schedule/event/janus/">FOSDEM 2023</a>;
+ *    - Presentation on Real-Time Text in SIP and WebRTC at <a href="https://www.youtube.com/watch?v=yehYE34d3mI&t=19937s">Kamailio World 2023</a>;
+ *    - Presentation on Hybrid meetings using Janus at <a href="https://www.youtube.com/watch?v=ZqRvUxgf00s">CommCon 2023</a>;
+ *    - Presentation on Bandwidth Estimation (BWE) in Janus at <a href="https://www.youtube.com/watch?v=7L35Q_5aqCc">RTC.ON 2023</a>;
+ *    - Presentation on WHIP, WHEP and WebRTC broadcasting at <a href="https://www.youtube.com/watch?v=L0JkNphlEmw">TADSummit Paris 2023</a>;
+ *    - Presentation on AV1/SVC support in Janus at <a href="https://fosdem.org/2024/schedule/event/fosdem-2024-3000-getting-av1-svc-to-work-in-the-janus-webrtc-server/">FOSDEM 2024</a>;
+ *    - Presentation on experimental application protocols support in the SIP plugin at <a href="https://www.youtube.com/watch?v=Cho556qHRaE">OpenSIPS Summit 2024</a>;
+ *    - Presentation on experimental SIP trunking support in the SIP plugin at <a href="https://www.youtube.com/watch?v=_e0fWnWWOeY&t=3855s">Kamailio World 2024</a>;
+ *    - Presentation on prototyping an interaction between WebRTC and QUIC (RTP Over QUIC, Media Over QUIC) at <a href="https://www.youtube.com/watch?v=bq9LRCfxz_E">RTC.ON 2024</a>;
+ *    - Presentation on RTP Over QUIC at <a href="https://www.youtube.com/watch?v=J0_4nO5a4ZI">Kamailio World 2025</a>;
+ *    - Presentation on multistream support in the SIP and NoSIP plugins at <a href="https://www.youtube.com/live/lN96vOjhhhI?si=wiwS0KbyFBYRF9ez&t=1751">OpenSIPS Summit 2025</a>. \n\n
  *    Apart from these presentations, make sure you also check the slides
- *    and presentations from <a href="https://januscon.it/2019">JanusCon</a>,
+ *    and presentations from <a href="https://januscon.it">JanusCon</a> (including the
+ *    <a href="https://januscon.it/2019">2019 edition</a>),
  *    the Janus conference we hosted here in Napoli.
  *    \n\n
  *    .
@@ -4126,7 +4149,7 @@ ldd janus | grep asan
  *    before the \c bootstrap and \c configure steps in the \c usrsctp
  *    compilation:\n\n
  *\verbatim
-   export CFLAGS="-fno-strict-aliasing" ./boostrap
+   export CFLAGS="-fno-strict-aliasing" ./bootstrap
    export CFLAGS="-fno-strict-aliasing" ./configure --prefix=/usr
    make && make install
  \endverbatim
@@ -4210,7 +4233,7 @@ ldd janus | grep asan
  *    Since version \c 0.0.6, you can! This is a feature that several
  *    developers asked for, especially those that are interested in wrapping
  *    the Janus API on the server side, and implement the communication
- *    on the client side their own way. Specificaly, Janus now supports
+ *    on the client side their own way. Specifically, Janus now supports
  *    RabbitMQ based messaging as an alternative "transport" for API
  *    requests, responses and notifications, meaning it can be used with
  *    or without HTTP and WebSockets, depending on your requirements.
