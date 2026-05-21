@@ -31,8 +31,10 @@
 	"devDependencies": {
 		"@rollup/plugin-replace": "^5.0.2",
 		"@rollup/plugin-strip": "^3.0.2",
-		"eslint": "^9.4.0",
+		"@eslint/js": "^10.0.1",
+		"eslint": "^10.4.0",
 		"eslint-plugin-html": "^8.1.1",
+		"globals": "^17.6.0",
 		"rollup": "^3.21.6"
 	},
 	"scripts": {
