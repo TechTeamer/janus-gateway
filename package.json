@@ -32,10 +32,18 @@
 		"@eslint/js": "^10.0.1",
 		"@rollup/plugin-replace": "^6.0.3",
 		"@rollup/plugin-strip": "^3.0.2",
+<<<<<<< HEAD
 		"eslint": "^10.4.0",
 		"eslint-plugin-html": "^8.1.1",
 		"globals": "^17.6.0",
 		"rollup": "^4.60.4"
+=======
+		"@eslint/js": "^10.0.1",
+		"eslint": "^10.4.0",
+		"eslint-plugin-html": "^8.1.1",
+		"globals": "^17.6.0",
+		"rollup": "^3.21.6"
+>>>>>>> bb1dd328 (chore: eslint update)
 	},
 	"scripts": {
 		"lint": "npx eslint --debug html",
