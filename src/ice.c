@@ -416,6 +416,12 @@ int janus_ice_get_peerconnection_num(void) {
 /* RTP/RTCP port range */
 static uint16_t rtp_range_min = 0;
 static uint16_t rtp_range_max = 0;
+uint16_t janus_ice_get_rtp_range_min(void) {
+	return rtp_range_min;
+}
+uint16_t janus_ice_get_rtp_range_max(void) {
+	return rtp_range_max;
+}
 
 
 #define JANUS_ICE_PACKET_AUDIO	0
@@ -1443,9 +1449,10 @@ gint janus_ice_handle_attach_plugin(void *core_session, janus_ice_handle *handle
 			} else {
 				janus_refcount_increase(&loop->ref);
 				automatic_selection = FALSE;
+				loop->handles++;
 				handle->mainctx = loop->mainctx;
 				handle->mainloop = loop->mainloop;
-				loop->handles++;
+				handle->static_event_loop = loop;
 				JANUS_LOG(LOG_VERB, "[%"SCNu64"] Manually added handle to loop #%d\n", handle->handle_id, loop->id);
 			}
 		}
@@ -1528,7 +1535,7 @@ gint janus_ice_handle_destroy(void *core_session, janus_ice_handle *handle) {
 		janus_ice_static_event_loop *loop = (janus_ice_static_event_loop *)handle->static_event_loop;
 		loop->handles--;
 		janus_refcount_decrease(&loop->ref);
-		JANUS_LOG(LOG_VERB, "[%"SCNu64"] Manually removed handle from loop #%d\n", handle->handle_id, loop->id);
+		JANUS_LOG(LOG_VERB, "[%"SCNu64"] Removed handle from loop #%d\n", handle->handle_id, loop->id);
 	}
 	janus_mutex_unlock(&event_loops_mutex);
 	janus_plugin *plugin_t = (janus_plugin *)handle->app;
@@ -1606,9 +1613,10 @@ static void janus_ice_cb_agent_closed(GObject *src, GAsyncResult *result, gpoint
 	janus_ice_outgoing_traffic *t = (janus_ice_outgoing_traffic *)data;
 	janus_ice_handle *handle = t->handle;
 
-	JANUS_LOG(LOG_VERB, "[%"SCNu64"] Disposing nice agent %p\n", handle->handle_id, handle->agent);
-	g_object_unref(handle->agent);
-	handle->agent = NULL;
+	JANUS_LOG(LOG_VERB, "[%"SCNu64"] Disposing nice agent %p\n", handle->handle_id, src);
+	if(handle->agent == (NiceAgent *)src)
+		handle->agent = NULL;
+	g_object_unref(src);
 	g_source_unref((GSource *)t);
 	janus_refcount_decrease(&handle->ref);
 }
@@ -3101,13 +3109,13 @@ static void janus_ice_cb_nice_recv(NiceAgent *agent, guint stream_id, guint comp
 				/* Is this audio or video? */
 				int video = 0, vindex = 0;
 				/* Bundled streams, should we check the SSRCs? */
-				guint32 rtcp_ssrc = janus_rtcp_get_sender_ssrc(buf, buflen);
+				guint32 rtcp_ssrc = janus_rtcp_get_receiver_ssrc(buf, buflen);
 				janus_ice_peerconnection_medium *medium = g_hash_table_lookup(pc->media_byssrc, GINT_TO_POINTER(rtcp_ssrc));
 				if(medium == NULL) {
-					/* We don't know the remote SSRC: this can happen for recvonly clients
+					/* We don't know the local SSRC: this can happen for unidirectional streams
 					 * (see https://groups.google.com/forum/#!topic/discuss-webrtc/5yuZjV7lkNc)
-					 * Check the local SSRC, compare it to what we have */
-					rtcp_ssrc = janus_rtcp_get_receiver_ssrc(buf, buflen);
+					 * Check the remote SSRC, compare it to what we have */
+					rtcp_ssrc = janus_rtcp_get_sender_ssrc(buf, buflen);
 					medium = g_hash_table_lookup(pc->media_byssrc, GINT_TO_POINTER(rtcp_ssrc));
 					if(medium == NULL) {
 						if(rtcp_ssrc > 0) {
@@ -3803,7 +3811,9 @@ int janus_ice_setup_local(janus_ice_handle *handle, gboolean offer, gboolean tri
 	pc->media_bytype = g_hash_table_new_full(NULL, NULL, NULL, (GDestroyNotify)janus_ice_peerconnection_medium_dereference);
 #ifdef HAVE_PORTRANGE
 	/* FIXME: libnice supports this since 0.1.0, but the 0.1.3 on Fedora fails with an undefined reference! */
-	nice_agent_set_port_range(handle->agent, handle->stream_id, 1, rtp_range_min, rtp_range_max);
+	uint16_t pc_range_min = handle->rtp_range_min ? handle->rtp_range_min : rtp_range_min;
+	uint16_t pc_range_max = handle->rtp_range_max ? handle->rtp_range_max : rtp_range_max;
+	nice_agent_set_port_range(handle->agent, handle->stream_id, 1, pc_range_min, pc_range_max);
 #endif
 	/* Gather now only if we're doing hanf-trickle */
 	if(!janus_full_trickle_enabled && !nice_agent_gather_candidates(handle->agent, handle->stream_id)) {

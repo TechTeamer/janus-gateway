@@ -104,6 +104,8 @@ static struct janus_json_parameter attach_parameters[] = {
 	{"plugin", JSON_STRING, JANUS_JSON_PARAM_REQUIRED},
 	{"opaque_id", JSON_STRING, 0},
 	{"loop_index", JSON_INTEGER, JANUS_JSON_PARAM_POSITIVE},
+	{"min_port", JSON_INTEGER, JANUS_JSON_PARAM_POSITIVE},
+	{"max_port", JSON_INTEGER, JANUS_JSON_PARAM_POSITIVE},
 };
 static struct janus_json_parameter body_parameters[] = {
 	{"body", JSON_OBJECT, JANUS_JSON_PARAM_REQUIRED}
@@ -309,6 +311,8 @@ static uint candidates_timeout = DEFAULT_CANDIDATES_TIMEOUT;
 
 /* By default we list dependencies details, but some may prefer not to */
 static gboolean hide_dependencies = FALSE;
+/* Whether handles may request a custom RTP port sub-range on attach (default off) */
+static gboolean rtp_port_range_perhandle_override = FALSE;
 
 /* By default we do not exit if a shared library cannot be loaded or is missing an expected symbol */
 static gboolean exit_on_dl_error = FALSE;
@@ -710,7 +714,7 @@ static gboolean janus_check_sessions(gpointer user_data) {
 			if(timeout == -1)
 				timeout = (gint64)global_session_timeout;
 			if((timeout > 0 && (now - session->last_activity >= timeout * G_USEC_PER_SEC)) ||
-					((g_atomic_int_get(&session->transport_gone) && now - session->last_activity >= (gint64)reclaim_session_timeout * G_USEC_PER_SEC))) {
+					((g_atomic_int_get(&session->transport_gone) && now - session->transport_gone_time >= (gint64)reclaim_session_timeout * G_USEC_PER_SEC))) {
 				if(g_atomic_int_compare_and_exchange(&session->timedout, 0, 1)) {
 					JANUS_LOG(LOG_INFO, "Timeout expired for session %"SCNu64"...\n", session->session_id);
 					/* Mark the session as over, we'll deal with it later */
@@ -797,6 +801,7 @@ janus_session *janus_session_create(guint64 session_id) {
 	g_atomic_int_set(&session->timedout, 0);
 	g_atomic_int_set(&session->transport_gone, 0);
 	session->last_activity = janus_get_monotonic_time();
+	session->transport_gone_time = 0;
 	session->ice_handles = NULL;
 	janus_mutex_init(&session->mutex);
 	janus_mutex_lock(&sessions_mutex);
@@ -1267,6 +1272,29 @@ int janus_process_incoming_request(janus_request *request) {
 			ret = janus_process_error(request, session_id, transaction_text, JANUS_ERROR_UNKNOWN, "Memory error");
 			goto jsondone;
 		}
+		/* Optional per-handle ICE port range, confined within the global rtp_port_range */
+		json_t *min_port = json_object_get(root, "min_port");
+		json_t *max_port = json_object_get(root, "max_port");
+		if(min_port || max_port) {
+			if(!rtp_port_range_perhandle_override) {
+				JANUS_LOG(LOG_WARN, "[%"SCNu64"] Ignoring min_port/max_port: per-handle RTP port range override is disabled (rtp_port_range_perhandle_override)\n",
+					handle->handle_id);
+			} else {
+				json_int_t mn = min_port ? json_integer_value(min_port) : 0;
+				json_int_t mx = max_port ? json_integer_value(max_port) : 0;
+				uint16_t gmin = janus_ice_get_rtp_range_min(), gmax = janus_ice_get_rtp_range_max();
+				uint16_t lo = gmin ? gmin : 1, hi = gmax ? gmax : 65535;
+				if(mn >= lo && mx >= mn && mx <= hi) {
+					handle->rtp_range_min = (uint16_t)mn;
+					handle->rtp_range_max = (uint16_t)mx;
+				} else {
+					handle->rtp_range_min = 0;
+					handle->rtp_range_max = 0;
+					JANUS_LOG(LOG_WARN, "[%"SCNu64"] Ignoring attach port range %"JSON_INTEGER_FORMAT"-%"JSON_INTEGER_FORMAT" outside the configured rtp_port_range %"SCNu16"-%"SCNu16"\n",
+						handle->handle_id, mn, mx, lo, hi);
+				}
+			}
+		}
 		handle_id = handle->handle_id;
 		/* We increase the counter as this request is using the handle */
 		janus_refcount_increase(&handle->ref);
@@ -1374,6 +1402,7 @@ int janus_process_incoming_request(janus_request *request) {
 		session->source->transport->session_claimed(session->source->instance, session->session_id);
 		/* Previous transport may be gone, clear flag */
 		g_atomic_int_set(&session->transport_gone, 0);
+		session->transport_gone_time = 0;
 		janus_mutex_unlock(&session->mutex);
 		/* Prepare JSON reply */
 		json_t *reply = json_object();
@@ -3507,6 +3536,7 @@ void janus_transport_gone(janus_transport *plugin, janus_transport_session *tran
 					g_hash_table_iter_remove(&iter);
 				} else {
 					/* Set flag for transport_gone. The Janus sessions watchdog will clean this up if not reclaimed */
+					session->transport_gone_time = janus_get_monotonic_time();
 					g_atomic_int_set(&session->transport_gone, 1);
 				}
 			}
@@ -5096,7 +5126,14 @@ gint main(int argc, char *argv[]) {
 	const char *auth_secret = NULL;
 	if (item && item->value)
 		auth_secret = item->value;
-	janus_auth_init(auth_enabled, auth_secret);
+	item = janus_config_get(config, config_general, janus_config_type_item, "token_auth_hash");
+	const char *auth_hash = NULL;
+	if (item && item->value)
+		auth_hash = item->value;
+	if(janus_auth_init(auth_enabled, auth_secret, auth_hash) < 0) {
+		janus_options_destroy();
+		exit(1);
+	}
 
 	/* Check if opaque IDs should be sent back in the Janus API too */
 	item = janus_config_get(config, config_general, janus_config_type_item, "opaqueid_in_api");
@@ -5157,6 +5194,9 @@ gint main(int argc, char *argv[]) {
 			rtp_max_port = 65535;
 		JANUS_LOG(LOG_INFO, "RTP port range: %u -- %u\n", rtp_min_port, rtp_max_port);
 	}
+	/* Remember whether handles may request a custom RTP port sub-range on attach */
+	item = janus_config_get(config, config_media, janus_config_type_item, "rtp_port_range_perhandle_override");
+	rtp_port_range_perhandle_override = (item && item->value) ? janus_is_true(item->value) : FALSE;
 	/* Check if we need to enable the ICE Lite mode */
 	item = janus_config_get(config, config_nat, janus_config_type_item, "ice_lite");
 	ice_lite = (item && item->value) ? janus_is_true(item->value) : FALSE;
