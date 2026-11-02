@@ -1,0 +1,42 @@
+name: Pull Request
+
+on:
+  pull_request:
+
+concurrency:
+  group: pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  sonar:
+    name: SonarQube Scan
+    runs-on: [self-hosted, node]
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: SonarQube Scan
+        uses: SonarSource/sonarqube-scan-action@v8
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        with:
+          args: >
+            -Dsonar.login=${{ secrets.SONAR_TOKEN }}
+            -Dsonar.pullrequest.key=${{ github.event.pull_request.number }}
+            -Dsonar.pullrequest.branch=${{ github.head_ref }}
+            -Dsonar.pullrequest.base=${{ github.base_ref }}
+            -Dsonar.scanner.metadataFilePath=${{ github.workspace }}/sonar-report-task.txt
+
+      - name: Upload Sonar report metadata
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: sonar-report-task
+          path: sonar-report-task.txt
