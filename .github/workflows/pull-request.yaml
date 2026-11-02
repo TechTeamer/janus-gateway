@@ -14,7 +14,7 @@ defaults:
 jobs:
   sonar:
     name: SonarQube Scan
-    runs-on: [self-hosted, node]
+    runs-on: ubuntu-latest
     permissions:
       contents: read
     steps:
