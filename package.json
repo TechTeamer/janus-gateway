@@ -41,5 +41,8 @@
 		"lint": "npx eslint --debug html",
 		"rollup": "npx rollup -c npm/rollup.config.mjs",
 		"prerelease": "npm run rollup -- --o npm/dist/janus.es.js --f es && node -e \"const fs=require('fs'); const data=fs.readFileSync('./html/demos/janus.js'); fs.mkdirSync('./npm/src', {recursive:true}); fs.writeFileSync('./npm/src/janus.js',data);\""
+	},
+	"resolutions": {
+		"**/minimatch": "^11.0.1"
 	}
 }
