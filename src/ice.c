@@ -1674,6 +1674,15 @@ static void janus_ice_webrtc_free(janus_ice_handle *handle) {
 		janus_flags_clear(&handle->webrtc_flags, JANUS_ICE_HANDLE_WEBRTC_CLEANING);
 		janus_flags_clear(&handle->webrtc_flags, JANUS_ICE_HANDLE_WEBRTC_HAS_AGENT);
 		janus_flags_clear(&handle->webrtc_flags, JANUS_ICE_HANDLE_WEBRTC_E2EE);
+		if(handle->pending_trickles) {
+			while(handle->pending_trickles) {
+				GList *temp = g_list_first(handle->pending_trickles);
+				handle->pending_trickles = g_list_remove_link(handle->pending_trickles, temp);
+				janus_ice_trickle *trickle = (janus_ice_trickle *)temp->data;
+				g_list_free(temp);
+				janus_ice_trickle_destroy(trickle);
+			}
+		}
 		janus_mutex_unlock(&handle->mutex);
 		return;
 	}
@@ -3193,7 +3202,6 @@ static void janus_ice_cb_nice_recv(NiceAgent *agent, guint stream_id, guint comp
 							/* Should we retransmit this packet? */
 							if((p->last_retransmit > 0) && (now-p->last_retransmit < p->current_backoff)) {
 								JANUS_LOG(LOG_HUGE, "[%"SCNu64"]   >> >> Packet %u was retransmitted just %"SCNi64"us ago, skipping\n", handle->handle_id, seqnr, now-p->last_retransmit);
-								g_queue_pop_tail(queue);
 								continue;
 							}
 							in_rb = 1;
@@ -3248,7 +3256,6 @@ static void janus_ice_cb_nice_recv(NiceAgent *agent, guint stream_id, guint comp
 						if(rtcp_ctx != NULL && in_rb) {
 							g_atomic_int_inc(&rtcp_ctx->nack_count);
 						}
-						g_queue_pop_tail(queue);
 					}
 					medium->retransmit_recent_cnt += retransmits_cnt;
 					/* FIXME Remove the NACK compound packet, we've handled it */
@@ -3703,13 +3710,13 @@ int janus_ice_setup_local(janus_ice_handle *handle, gboolean offer, gboolean tri
 
 	/* Add all local addresses, except those in the ignore list */
 	struct ifaddrs *ifaddr, *ifa;
-	int family, s, n;
+	int family, s;
 	char host[NI_MAXHOST];
 	if(getifaddrs(&ifaddr) == -1) {
 		JANUS_LOG(LOG_ERR, "[%"SCNu64"] Error getting list of interfaces... %d (%s)\n",
 			handle->handle_id, errno, g_strerror(errno));
 	} else {
-		for(ifa = ifaddr, n = 0; ifa != NULL; ifa = ifa->ifa_next, n++) {
+		for(ifa = ifaddr; ifa != NULL; ifa = ifa->ifa_next) {
 			if(ifa->ifa_addr == NULL)
 				continue;
 			/* Skip interfaces which are not up and running */
@@ -4168,7 +4175,8 @@ static gboolean janus_ice_outgoing_transport_wide_cc_feedback(gpointer user_data
 	guint32 ssrc_peer = 0;
 	janus_ice_peerconnection_medium *medium = NULL;
 	if(pc) {
-		/* Find inbound video medium */
+		/* Prefer inbound video, falling back to audio if no video has a valid peer SSRC. */
+		janus_ice_peerconnection_medium *audio = NULL;
 		janus_mutex_lock(&handle->mutex);
 		GHashTableIter iter;
 		gpointer value;
@@ -4191,6 +4199,12 @@ static gboolean janus_ice_outgoing_transport_wide_cc_feedback(gpointer user_data
 				if(medium && ssrc_peer)
 					break;
 			}
+			if(audio == NULL && m && m->type == JANUS_MEDIA_AUDIO && m->recv && m->ssrc_peer[0] != 0)
+				audio = m;
+		}
+		if(medium == NULL && audio != NULL) {
+			medium = audio;
+			ssrc_peer = audio->ssrc_peer[0];
 		}
 		janus_mutex_unlock(&handle->mutex);
 	}
@@ -4272,7 +4286,8 @@ static gboolean janus_ice_outgoing_transport_wide_cc_feedback(gpointer user_data
 				medium->ssrc, ssrc_peer, feedback_packet_count, packets_to_process);
 			/* Enqueue it, we'll send it later */
 			if(len > 0) {
-				janus_plugin_rtcp rtcp = { .mindex = medium->mindex, .video = TRUE, .buffer = rtcpbuf, .length = len };
+				janus_plugin_rtcp rtcp = { .mindex = medium->mindex,
+					.video = (medium->type == JANUS_MEDIA_VIDEO), .buffer = rtcpbuf, .length = len };
 				janus_ice_relay_rtcp_internal(handle, medium, &rtcp, FALSE);
 			}
 			if(packets_to_process != packets) {

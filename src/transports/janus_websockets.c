@@ -838,8 +838,10 @@ void janus_websockets_destroy(void) {
 	janus_mutex_unlock(&writable_mutex);
 #endif
 
+	janus_mutex_lock(&access_list_mutex);
 	g_list_free_full(janus_websockets_access_list, (GDestroyNotify)g_free);
 	g_list_free_full(janus_websockets_admin_access_list, (GDestroyNotify)g_free);
+	janus_mutex_unlock(&access_list_mutex);
 
 	g_atomic_int_set(&initialized, 0);
 	g_atomic_int_set(&stopping, 0);
@@ -889,10 +891,12 @@ static void janus_websockets_destroy_client(
 	ws_client->buflen = 0;
 	ws_client->bufpending = 0;
 	ws_client->bufoffset = 0;
-	janus_mutex_unlock(&ws_client->ts->mutex);
+	janus_transport_session* ts = ws_client->ts;
+	ws_client->ts = NULL;
+	janus_mutex_unlock(&ts->mutex);
 	/* Notify core */
-	gateway->transport_gone(&janus_websockets_transport, ws_client->ts);
-	janus_transport_session_destroy(ws_client->ts);
+	gateway->transport_gone(&janus_websockets_transport, ts);
+	janus_transport_session_destroy(ts);
 }
 
 int janus_websockets_get_api_compatibility(void) {

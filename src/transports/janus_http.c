@@ -440,14 +440,14 @@ static struct MHD_Daemon *janus_http_create_daemon(gboolean admin, char *path,
 	}
 	if(!found && (ip || interface)) {
 		struct ifaddrs *ifaddr = NULL, *ifa = NULL;
-		int family = 0, s = 0, n = 0;
+		int family = 0, s = 0;
 		char host[NI_MAXHOST];
 		if(getifaddrs(&ifaddr) == -1) {
 			JANUS_LOG(LOG_ERR, "Error getting list of interfaces to bind %s API %s webserver...\n",
 				admin ? "Admin" : "Janus", secure ? "HTTPS" : "HTTP");
 			return NULL;
 		} else {
-			for(ifa = ifaddr, n = 0; ifa != NULL; ifa = ifa->ifa_next, n++) {
+			for(ifa = ifaddr; ifa != NULL; ifa = ifa->ifa_next) {
 				if(ifa->ifa_addr == NULL)
 					continue;
 				family = ifa->ifa_addr->sa_family;
@@ -1007,8 +1007,10 @@ void janus_http_destroy(void) {
 	sessions = NULL;
 	janus_mutex_unlock(&sessions_mutex);
 
+	janus_mutex_lock(&access_list_mutex);
 	g_list_free_full(janus_http_access_list, (GDestroyNotify)g_free);
 	g_list_free_full(janus_http_admin_access_list, (GDestroyNotify)g_free);
+	janus_mutex_unlock(&access_list_mutex);
 
 	g_atomic_int_set(&initialized, 0);
 	g_atomic_int_set(&stopping, 0);

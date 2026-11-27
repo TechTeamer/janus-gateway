@@ -108,6 +108,8 @@ static const char *dtls_ciphers = DTLS_DEFAULT_CIPHERS;
 #define DTLS_AUTOCERT_DURATION	60*60*24*365
 /* NIST P-256 elliptic curve used for private key generation */
 #define DTLS_ELLIPTIC_CURVE NID_X9_62_prime256v1
+/* Max ClientHello datagrams to keep if received before the handshake starts */
+#define DTLS_MAX_EARLY_CLIENTHELLOS	2
 
 /* By default we always accept self-signed certificates (that's what almost
  * all of the existing WebRTC implementations do today), but if told so we
@@ -116,6 +118,9 @@ static gboolean dtls_selfsigned_certs_ok = TRUE;
 gboolean janus_dtls_are_selfsigned_certs_ok(void) {
 	return dtls_selfsigned_certs_ok;
 }
+
+/* Whether to offer post-quantum key exchange (X25519MLKEM768, BoringSSL only) */
+static gboolean dtls_pqc_enabled = FALSE;
 
 /* DTLS timeout base to enforce: notice that this can currently only be
  * modified if you're using BoringSSL, as OpenSSL uses 1s (1000ms) and
@@ -396,7 +401,7 @@ const char *janus_get_ssl_version(void) {
 
 /* DTLS-SRTP initialization */
 gint janus_dtls_srtp_init(const char *server_pem, const char *server_key, const char *password,
-		const char *ciphers, guint16 timeout, gboolean rsa_private_key, gboolean accept_selfsigned) {
+		const char *ciphers, guint16 timeout, gboolean rsa_private_key, gboolean accept_selfsigned, gboolean pqc) {
 	const char *crypto_lib = NULL;
 #if JANUS_USE_OPENSSL_PRE_1_1_API && !defined(HAVE_BORINGSSL)
 #if defined(LIBRESSL_VERSION_NUMBER)
@@ -504,6 +509,13 @@ gint janus_dtls_srtp_init(const char *server_pem, const char *server_key, const 
 		JANUS_LOG(LOG_WARN, "DTLS timeout set to %u ms, but not using BoringSSL: ignoring\n", timeout);
 	}
 #endif
+	dtls_pqc_enabled = pqc;
+#if !defined(HAVE_BORINGSSL) || !defined(SSL_GROUP_X25519_MLKEM768)
+	if(dtls_pqc_enabled) {
+		JANUS_LOG(LOG_WARN, "Post-quantum DTLS key exchange enabled, but not using BoringSSL: ignoring\n");
+		dtls_pqc_enabled = FALSE;
+	}
+#endif
 
 	/* Initialize libsrtp */
 	if(srtp_init() != srtp_err_status_ok) {
@@ -524,6 +536,10 @@ static void janus_dtls_srtp_free(const janus_refcount *dtls_ref) {
 	janus_dtls_srtp *dtls = janus_refcount_containerof(dtls_ref, janus_dtls_srtp, ref);
 	/* This stack can be destroyed, free all the resources */
 	dtls->pc = NULL;
+	if(dtls->early_msgs != NULL) {
+		g_queue_free_full(dtls->early_msgs, (GDestroyNotify)g_bytes_unref);
+		dtls->early_msgs = NULL;
+	}
 	if(dtls->ssl != NULL) {
 		SSL_free(dtls->ssl);
 		dtls->ssl = NULL;
@@ -630,6 +646,18 @@ janus_dtls_srtp *janus_dtls_srtp_create(void *ice_pc, janus_dtls_role role) {
 	int grp_list[1] = { NID_X9_62_prime256v1 };
 	SSL_set1_groups(dtls->ssl, grp_list, 1);
 #endif
+#if defined(HAVE_BORINGSSL) && defined(SSL_GROUP_X25519_MLKEM768)
+	if(dtls_pqc_enabled) {
+		const uint16_t pqc_grp_list[] = { SSL_GROUP_X25519_MLKEM768, SSL_GROUP_X25519,
+			SSL_GROUP_SECP256R1, SSL_GROUP_SECP384R1 };
+		if(!SSL_set1_group_ids(dtls->ssl, pqc_grp_list, sizeof(pqc_grp_list)/sizeof(pqc_grp_list[0]))) {
+			JANUS_LOG(LOG_ERR, "[%"SCNu64"]   Error setting DTLS groups! (%s)\n",
+				handle->handle_id, ERR_reason_error_string(ERR_get_error()));
+			janus_refcount_decrease(&dtls->ref);
+			return NULL;
+		}
+	}
+#endif
 	const long flags = SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3 | SSL_OP_NO_COMPRESSION | SSL_OP_SINGLE_ECDH_USE;
 	SSL_set_options(dtls->ssl, flags);
 #ifdef HAVE_DTLS_SETTIMEOUT
@@ -664,6 +692,21 @@ void janus_dtls_srtp_handshake(janus_dtls_srtp *dtls) {
 
 	/* Notify event handlers */
 	janus_dtls_notify_state_change(dtls);
+
+	if(dtls->early_msgs != NULL) {
+		GQueue *early_msgs = dtls->early_msgs;
+		dtls->early_msgs = NULL;
+		GBytes *msg;
+		while((msg = g_queue_pop_head(early_msgs)) != NULL) {
+			if(dtls->dtls_role == JANUS_DTLS_ROLE_SERVER) {
+				gsize len = 0;
+				const char *buf = g_bytes_get_data(msg, &len);
+				janus_dtls_srtp_incoming_msg(dtls, (char *)buf, len);
+			}
+			g_bytes_unref(msg);
+		}
+		g_queue_free(early_msgs);
+	}
 }
 
 int janus_dtls_srtp_create_sctp(janus_dtls_srtp *dtls) {
@@ -714,7 +757,19 @@ void janus_dtls_srtp_incoming_msg(janus_dtls_srtp *dtls, char *buf, uint16_t len
 		return;
 	}
 	if(dtls->dtls_started == 0) {
-		/* Handshake not started yet: maybe we're still waiting for the answer and the DTLS role? */
+		/* Keep an early ClientHello for when the handshake starts, instead of waiting for a retransmission */
+		if(len > 17 && buf[0] == 22 && buf[13] == 1) {
+			if(dtls->early_msgs == NULL)
+				dtls->early_msgs = g_queue_new();
+			GBytes *msg = g_bytes_new(buf, len);
+			if(g_queue_find_custom(dtls->early_msgs, msg, (GCompareFunc)g_bytes_compare) != NULL) {
+				g_bytes_unref(msg);
+				return;
+			}
+			g_queue_push_tail(dtls->early_msgs, msg);
+			if(g_queue_get_length(dtls->early_msgs) > DTLS_MAX_EARLY_CLIENTHELLOS)
+				g_bytes_unref(g_queue_pop_head(dtls->early_msgs));
+		}
 		return;
 	}
 	int written = BIO_write(dtls->read_bio, buf, len);
@@ -761,7 +816,15 @@ void janus_dtls_srtp_incoming_msg(janus_dtls_srtp *dtls, char *buf, uint16_t len
 		}
 #endif
 	} else {
-		JANUS_LOG(LOG_VERB, "[%"SCNu64"] DTLS established, yay!\n", handle->handle_id);
+#if defined(HAVE_BORINGSSL)
+		const char *group = SSL_get_group_name(SSL_get_group_id(dtls->ssl));
+#elif defined(OPENSSL_VERSION_MAJOR) && OPENSSL_VERSION_MAJOR >= 3
+		const char *group = SSL_group_to_name(dtls->ssl, SSL_get_negotiated_group(dtls->ssl));
+#else
+		const char *group = NULL;
+#endif
+		JANUS_LOG(LOG_VERB, "[%"SCNu64"] DTLS established (%s, %s)\n", handle->handle_id,
+			SSL_get_version(dtls->ssl), group ? group : "unknown group");
 		/* Check the remote fingerprint */
 		X509 *rcert = SSL_get_peer_certificate(dtls->ssl);
 		if(!rcert) {
@@ -1109,11 +1172,8 @@ gboolean janus_dtls_retry(gpointer stack) {
 		goto stoptimer;
 	if(janus_flags_is_set(&handle->webrtc_flags, JANUS_ICE_HANDLE_WEBRTC_STOP))
 		goto stoptimer;
-	if(dtls->dtls_state == JANUS_DTLS_STATE_CONNECTED) {
-		JANUS_LOG(LOG_VERB, "[%"SCNu64"] DTLS already set up, disabling retransmission timer!\n", handle->handle_id);
-		goto stoptimer;
-	}
-	if(janus_get_monotonic_time() - dtls->dtls_started >= 20*G_USEC_PER_SEC) {
+	if(dtls->dtls_state != JANUS_DTLS_STATE_CONNECTED &&
+			janus_get_monotonic_time() - dtls->dtls_started >= 20*G_USEC_PER_SEC) {
 		/* FIXME Should we really give up after 20 seconds waiting for DTLS? */
 		JANUS_LOG(LOG_ERR, "[%"SCNu64"] DTLS taking too much time for component %d in stream %d...\n",
 			handle->handle_id, pc->component_id, pc->stream_id);
@@ -1122,6 +1182,12 @@ gboolean janus_dtls_retry(gpointer stack) {
 	}
 	struct timeval timeout = {0};
 	if(DTLSv1_get_timeout(dtls->ssl, &timeout) == 0) {
+		if(dtls->dtls_state == JANUS_DTLS_STATE_CONNECTED) {
+			/* With DTLS 1.3 the handshake may be done before our last flight
+			 * has been ACKed, so we only stop when no timer is pending anymore */
+			JANUS_LOG(LOG_VERB, "[%"SCNu64"] DTLS already set up, disabling retransmission timer!\n", handle->handle_id);
+			goto stoptimer;
+		}
 		/* failed to get timeout. try again on next iter */
 		return TRUE;
 	}

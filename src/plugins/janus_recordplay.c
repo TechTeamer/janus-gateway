@@ -634,6 +634,9 @@ void janus_recordplay_send_rtcp_feedback(janus_plugin_session *handle, int video
 #define AUDIO_PT		111
 #define VIDEO_PT		100
 
+/* Size of the buffer the playout thread reads frames in: frames that don't fit are skipped when indexing */
+#define JANUS_RECORDPLAY_FRAME_MAX	1500
+
 /* Helper method to check which codec was used in a specific recording (and if it's end-to-end encrypted) */
 static const char *janus_recordplay_parse_codec(const char *dir, const char *filename, char *fmtp, size_t fmtplen,
 		uint8_t *audiolevel_ext_id, uint8_t *videoorient_ext_id, int *opusred_pt, gboolean *e2ee) {
@@ -704,6 +707,11 @@ static const char *janus_recordplay_parse_codec(const char *dir, const char *fil
 			offset += 2;
 			if(len > 0 && !parsed_header) {
 				/* This is the info header */
+				if(len >= sizeof(prebuffer)) {
+					JANUS_LOG(LOG_ERR, "Info header too big (%"SCNu16" bytes), invalid recording\n", len);
+					fclose(file);
+					return NULL;
+				}
 				bytes = fread(prebuffer, sizeof(char), len, file);
 				if(bytes < 0) {
 					JANUS_LOG(LOG_ERR, "Error reading from file... %s\n", g_strerror(errno));
@@ -849,7 +857,7 @@ static int janus_recordplay_generate_offer(janus_recordplay_recording *rec) {
 			JANUS_SDP_OA_FMTP, rec->vfmtp,
 			JANUS_SDP_OA_DIRECTION, JANUS_SDP_SENDONLY,
 			JANUS_SDP_OA_EXTENSION, JANUS_RTP_EXTMAP_MID, mid_ext_id,
-			JANUS_SDP_OA_EXTENSION, JANUS_RTP_EXTMAP_AUDIO_LEVEL, rec->videoorient_ext_id,
+			JANUS_SDP_OA_EXTENSION, JANUS_RTP_EXTMAP_VIDEO_ORIENTATION, rec->videoorient_ext_id,
 		JANUS_SDP_OA_MLINE, JANUS_SDP_APPLICATION,
 			JANUS_SDP_OA_ENABLED, offer_data,
 		JANUS_SDP_OA_DONE);
@@ -1963,6 +1971,16 @@ static void *janus_recordplay_handler(void *data) {
 				}
 				rec->arc_file = g_strdup(filename);
 				janus_recorder *rc = janus_recorder_create(recordings_path, janus_audiocodec_name(rec->acodec), rec->arc_file);
+				if(rc == NULL) {
+					janus_sdp_destroy(offer);
+					janus_refcount_decrease(&rec->ref);
+					janus_recordplay_recording_destroy(rec);
+					janus_mutex_unlock(&recordings_mutex);
+					JANUS_LOG(LOG_ERR, "Could not create recorder\n");
+					error_code = JANUS_RECORDPLAY_ERROR_INVALID_RECORDING;
+					g_snprintf(error_cause, 512, "Could not create recorder");
+					goto error;
+				}
 				/* If the audio-level extension has been negotiated, mark it in the recording */
 				if(rec->audiolevel_ext_id > 0)
 					janus_recorder_add_extmap(rc, rec->audiolevel_ext_id, JANUS_RTP_EXTMAP_AUDIO_LEVEL);
@@ -1984,6 +2002,16 @@ static void *janus_recordplay_handler(void *data) {
 				rec->vrc_file = g_strdup(filename);
 				janus_recorder *rc = janus_recorder_create_full(recordings_path,
 					janus_videocodec_name(rec->vcodec), rec->vfmtp, rec->vrc_file);
+				if(rc == NULL) {
+					janus_sdp_destroy(offer);
+					janus_refcount_decrease(&rec->ref);
+					janus_recordplay_recording_destroy(rec);
+					janus_mutex_unlock(&recordings_mutex);
+					JANUS_LOG(LOG_ERR, "Could not create recorder\n");
+					error_code = JANUS_RECORDPLAY_ERROR_INVALID_RECORDING;
+					g_snprintf(error_cause, 512, "Could not create recorder");
+					goto error;
+				}
 				/* If the video-orientation extension has been negotiated, mark it in the recording */
 				if(rec->videoorient_ext_id > 0)
 					janus_recorder_add_extmap(rc, rec->videoorient_ext_id, JANUS_RTP_EXTMAP_VIDEO_ORIENTATION);
@@ -2605,6 +2633,11 @@ janus_recordplay_frame_packet *janus_recordplay_get_frames(const char *dir, cons
 			if(len > 0 && !parsed_header) {
 				/* This is the info header */
 				JANUS_LOG(LOG_VERB, "New .mjr header format\n");
+				if(len >= sizeof(prebuffer)) {
+					JANUS_LOG(LOG_ERR, "Info header too big (%"SCNu16" bytes), invalid recording\n", len);
+					fclose(file);
+					return NULL;
+				}
 				bytes = fread(prebuffer, sizeof(char), len, file);
 				if(bytes < 0) {
 					JANUS_LOG(LOG_ERR, "Error reading from file... %s\n", g_strerror(errno));
@@ -2723,6 +2756,13 @@ janus_recordplay_frame_packet *janus_recordplay_get_frames(const char *dir, cons
 		if(prebuffer[1] == 'J' || (!data && len < 12)) {
 			/* Not RTP, skip */
 			JANUS_LOG(LOG_HUGE, "  -- Not RTP, skipping\n");
+			offset += len;
+			continue;
+		}
+		if((data && (len < sizeof(gint64) || len - sizeof(gint64) > JANUS_RECORDPLAY_FRAME_MAX)) ||
+				(!data && len > JANUS_RECORDPLAY_FRAME_MAX)) {
+			/* The playout thread wouldn't be able to read this frame */
+			JANUS_LOG(LOG_WARN, "Skipping frame with invalid length (%"SCNu16" bytes)\n", len);
 			offset += len;
 			continue;
 		}
@@ -3000,7 +3040,7 @@ static void *janus_recordplay_playout_thread(void *sessiondata) {
 	gettimeofday(&dbefore, NULL);
 
 	janus_recordplay_frame_packet *audio = session->aframes, *video = session->vframes, *data = session->dframes;
-	char *buffer = g_malloc0(1500);
+	char *buffer = g_malloc0(JANUS_RECORDPLAY_FRAME_MAX);
 	int bytes = 0;
 	int64_t ts_diff = 0, passed = 0;
 

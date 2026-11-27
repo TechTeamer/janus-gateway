@@ -1700,6 +1700,20 @@ static void janus_streaming_mountpoint_destroy(janus_streaming_mountpoint *mount
 	janus_refcount_decrease(&mountpoint->ref);
 }
 
+/* The helpers that create a mountpoint don't add it to the mountpoints table:
+ * while it's being set up, its ID is only reserved in mountpoints_temp, so that
+ * requests addressing it (e.g., a destroy) fail as if it didn't exist yet. Once
+ * the mountpoint is ready, this adds it to the table, which takes over the
+ * reference of whoever created it: the creator must not use it after that */
+static void janus_streaming_mountpoint_add(janus_streaming_mountpoint *mp) {
+	janus_mutex_lock(&mountpoints_mutex);
+	g_hash_table_insert(mountpoints,
+		string_ids ? (gpointer)g_strdup(mp->id_str) : (gpointer)janus_uint64_dup(mp->id),
+		mp);
+	g_hash_table_remove(mountpoints_temp, string_ids ? (gpointer)mp->id_str : (gpointer)&mp->id);
+	janus_mutex_unlock(&mountpoints_mutex);
+}
+
 static void janus_streaming_mountpoint_free(const janus_refcount *mp_ref) {
 	janus_streaming_mountpoint *mp = janus_refcount_containerof(mp_ref, janus_streaming_mountpoint, ref);
 	/* This mountpoint can be destroyed, free all the resources */
@@ -2120,7 +2134,7 @@ int janus_streaming_init(janus_callbacks *callback, const char *config_path) {
 		janus_config_item *range = janus_config_get(config, config_general, janus_config_type_item, "rtp_port_range");
 		if(range && range->value) {
 			/* Split in min and max port */
-			char *maxport = strrchr(range->value, '-');
+			char *maxport = (char *)strrchr(range->value, '-');
 			if(maxport != NULL) {
 				*maxport = '\0';
 				maxport++;
@@ -2693,6 +2707,7 @@ int janus_streaming_init(janus_callbacks *callback, const char *config_path) {
 					mp->secret = g_strdup(secret->value);
 				if(pin && pin->value)
 					mp->pin = g_strdup(pin->value);
+				janus_streaming_mountpoint_add(mp);
 			} else if(!strcasecmp(type->value, "live")) {
 				/* File-based live source */
 				janus_config_item *desc = janus_config_get(config, cat, janus_config_type_item, "description");
@@ -2775,6 +2790,7 @@ int janus_streaming_init(janus_callbacks *callback, const char *config_path) {
 					mp->secret = g_strdup(secret->value);
 				if(pin && pin->value)
 					mp->pin = g_strdup(pin->value);
+				janus_streaming_mountpoint_add(mp);
 			} else if(!strcasecmp(type->value, "ondemand")) {
 				/* File-based on demand source */
 				janus_config_item *desc = janus_config_get(config, cat, janus_config_type_item, "description");
@@ -2857,6 +2873,7 @@ int janus_streaming_init(janus_callbacks *callback, const char *config_path) {
 					mp->secret = g_strdup(secret->value);
 				if(pin && pin->value)
 					mp->pin = g_strdup(pin->value);
+				janus_streaming_mountpoint_add(mp);
 			} else if(!strcasecmp(type->value, "rtsp")) {
 #ifndef HAVE_LIBCURL
 				JANUS_LOG(LOG_ERR, "Can't add 'rtsp' mountpoint '%s', libcurl support not compiled...\n", cat->name);
@@ -3000,6 +3017,7 @@ int janus_streaming_init(janus_callbacks *callback, const char *config_path) {
 					mp->secret = g_strdup(secret->value);
 				if(pin && pin->value)
 					mp->pin = g_strdup(pin->value);
+				janus_streaming_mountpoint_add(mp);
 #endif
 			} else {
 				JANUS_LOG(LOG_WARN, "Ignoring unknown mountpoint type '%s' (%s)...\n", type->value, cat->name);
@@ -4109,10 +4127,10 @@ static json_t *janus_streaming_process_synchronous_request(janus_streaming_sessi
 					e2ee ? json_is_true(e2ee) : FALSE,
 					pd ? json_is_true(pd) : FALSE,
 					abscaptime_src_id ? json_integer_value(abscaptime_src_id) : 0);
-			janus_mutex_lock(&mountpoints_mutex);
-			g_hash_table_remove(mountpoints_temp, string_ids ? (gpointer)mpid_str : (gpointer)&mpid);
-			janus_mutex_unlock(&mountpoints_mutex);
 			if(mp == NULL) {
+				janus_mutex_lock(&mountpoints_mutex);
+				g_hash_table_remove(mountpoints_temp, string_ids ? (gpointer)mpid_str : (gpointer)&mpid);
+				janus_mutex_unlock(&mountpoints_mutex);
 				JANUS_LOG(LOG_ERR, "Error creating 'rtp' stream...\n");
 				error_code = JANUS_STREAMING_ERROR_CANT_CREATE;
 				g_snprintf(error_cause, 512, "Error creating 'rtp' stream");
@@ -4211,10 +4229,10 @@ static json_t *janus_streaming_process_synchronous_request(janus_streaming_sessi
 					md ? (char *)json_string_value(md) : NULL,
 					filename, TRUE,
 					doaudio, apt, acodec, afmtp, dovideo);
-			janus_mutex_lock(&mountpoints_mutex);
-			g_hash_table_remove(mountpoints_temp, string_ids ? (gpointer)mpid_str : (gpointer)&mpid);
-			janus_mutex_unlock(&mountpoints_mutex);
 			if(mp == NULL) {
+				janus_mutex_lock(&mountpoints_mutex);
+				g_hash_table_remove(mountpoints_temp, string_ids ? (gpointer)mpid_str : (gpointer)&mpid);
+				janus_mutex_unlock(&mountpoints_mutex);
 				JANUS_LOG(LOG_ERR, "Error creating 'live' stream...\n");
 				error_code = JANUS_STREAMING_ERROR_CANT_CREATE;
 				g_snprintf(error_cause, 512, "Error creating 'live' stream");
@@ -4314,10 +4332,10 @@ static json_t *janus_streaming_process_synchronous_request(janus_streaming_sessi
 					md ? (char *)json_string_value(md) : NULL,
 					filename, FALSE,
 					doaudio, apt, acodec, afmtp, dovideo);
-			janus_mutex_lock(&mountpoints_mutex);
-			g_hash_table_remove(mountpoints_temp, string_ids ? (gpointer)mpid_str : (gpointer)&mpid);
-			janus_mutex_unlock(&mountpoints_mutex);
 			if(mp == NULL) {
+				janus_mutex_lock(&mountpoints_mutex);
+				g_hash_table_remove(mountpoints_temp, string_ids ? (gpointer)mpid_str : (gpointer)&mpid);
+				janus_mutex_unlock(&mountpoints_mutex);
 				JANUS_LOG(LOG_ERR, "Error creating 'ondemand' stream...\n");
 				error_code = JANUS_STREAMING_ERROR_CANT_CREATE;
 				g_snprintf(error_cause, 512, "Error creating 'ondemand' stream");
@@ -4326,6 +4344,9 @@ static json_t *janus_streaming_process_synchronous_request(janus_streaming_sessi
 			mp->is_private = is_private ? json_is_true(is_private) : FALSE;
 		} else if(!strcasecmp(type_text, "rtsp")) {
 #ifndef HAVE_LIBCURL
+			janus_mutex_lock(&mountpoints_mutex);
+			g_hash_table_remove(mountpoints_temp, string_ids ? (gpointer)mpid_str : (gpointer)&mpid);
+			janus_mutex_unlock(&mountpoints_mutex);
 			JANUS_LOG(LOG_ERR, "Can't create 'rtsp' mountpoint, libcurl support not compiled...\n");
 			error_code = JANUS_STREAMING_ERROR_INVALID_ELEMENT;
 			g_snprintf(error_cause, 512, "Can't create 'rtsp' mountpoint, libcurl support not compiled...\n");
@@ -4464,10 +4485,10 @@ static json_t *janus_streaming_process_synchronous_request(janus_streaming_sessi
 					(rtsp_timeout ? json_integer_value(rtsp_timeout) : JANUS_STREAMING_DEFAULT_CURL_TIMEOUT),
 					(rtsp_conn_timeout ? json_integer_value(rtsp_conn_timeout) : JANUS_STREAMING_DEFAULT_CURL_CONNECT_TIMEOUT),
 					error_on_failure);
-			janus_mutex_lock(&mountpoints_mutex);
-			g_hash_table_remove(mountpoints_temp, string_ids ? (gpointer)mpid_str : (gpointer)&mpid);
-			janus_mutex_unlock(&mountpoints_mutex);
 			if(mp == NULL) {
+				janus_mutex_lock(&mountpoints_mutex);
+				g_hash_table_remove(mountpoints_temp, string_ids ? (gpointer)mpid_str : (gpointer)&mpid);
+				janus_mutex_unlock(&mountpoints_mutex);
 				JANUS_LOG(LOG_ERR, "Error creating 'rtsp' stream...\n");
 				error_code = JANUS_STREAMING_ERROR_CANT_CREATE;
 				g_snprintf(error_cause, 512, "Error creating 'RTSP' stream");
@@ -4476,6 +4497,9 @@ static json_t *janus_streaming_process_synchronous_request(janus_streaming_sessi
 			mp->is_private = is_private ? json_is_true(is_private) : FALSE;
 #endif
 		} else {
+			janus_mutex_lock(&mountpoints_mutex);
+			g_hash_table_remove(mountpoints_temp, string_ids ? (gpointer)mpid_str : (gpointer)&mpid);
+			janus_mutex_unlock(&mountpoints_mutex);
 			JANUS_LOG(LOG_ERR, "Unknown stream type '%s'...\n", type_text);
 			error_code = JANUS_STREAMING_ERROR_INVALID_ELEMENT;
 			g_snprintf(error_cause, 512, "Unknown stream type '%s'...\n", type_text);
@@ -4750,6 +4774,8 @@ static json_t *janus_streaming_process_synchronous_request(janus_streaming_sessi
 			json_object_set_new(info, "type", json_string(mp->streaming_type == janus_streaming_type_live ? "live" : "on demand"));
 			gateway->notify_event(&janus_streaming_plugin, session ? session->handle : NULL, info);
 		}
+		/* We're done with the mountpoint: make it available to other requests */
+		janus_streaming_mountpoint_add(mp);
 		goto prepare_response;
 	} else if(!strcasecmp(request_text, "edit")) {
 		JANUS_LOG(LOG_VERB, "Attempt to edit an existing streaming mountpoint\n");
@@ -7995,7 +8021,6 @@ janus_streaming_mountpoint *janus_streaming_create_rtp_source(
 	}
 	if(!media || g_list_length(media) == 0) {
 		JANUS_LOG(LOG_ERR, "Can't add 'rtp' mountpoint, no audio, video or data have to be streamed...\n");
-		janus_mutex_unlock(&mountpoints_mutex);
 		return NULL;
 	}
 	/* Create the mountpoint */
@@ -8107,11 +8132,6 @@ janus_streaming_mountpoint *janus_streaming_create_rtp_source(
 	g_atomic_int_set(&live_rtp->destroyed, 0);
 	janus_refcount_init(&live_rtp->ref, janus_streaming_mountpoint_free);
 	janus_mutex_init(&live_rtp->mutex);
-	janus_mutex_lock(&mountpoints_mutex);
-	g_hash_table_insert(mountpoints,
-		string_ids ? (gpointer)g_strdup(live_rtp->id_str) : (gpointer)janus_uint64_dup(live_rtp->id),
-		live_rtp);
-	g_hash_table_remove(mountpoints_temp, string_ids ? (gpointer)live_rtp->id_str : (gpointer)&live_rtp->id);
 	/* If we need helper threads, spawn them now */
 	GError *error = NULL;
 	char tname[16];
@@ -8143,7 +8163,6 @@ janus_streaming_mountpoint *janus_streaming_create_rtp_source(
 				janus_refcount_decrease(&helper->ref);
 				/* This extra unref is for the init */
 				janus_refcount_decrease(&helper->ref);
-				janus_mutex_unlock(&mountpoints_mutex);
 				janus_streaming_mountpoint_destroy(live_rtp);
 				return NULL;
 			}
@@ -8151,7 +8170,6 @@ janus_streaming_mountpoint *janus_streaming_create_rtp_source(
 			live_rtp->threads = g_list_append(live_rtp->threads, helper);
 		}
 	}
-	janus_mutex_unlock(&mountpoints_mutex);
 	/* Finally, create the mountpoint thread itself */
 	g_snprintf(tname, sizeof(tname), "mp %s", live_rtp->id_str);
 	janus_refcount_increase(&live_rtp->ref);
@@ -8256,12 +8274,6 @@ janus_streaming_mountpoint *janus_streaming_create_file_source(
 	g_atomic_int_set(&file_source->destroyed, 0);
 	janus_refcount_init(&file_source->ref, janus_streaming_mountpoint_free);
 	janus_mutex_init(&file_source->mutex);
-	janus_mutex_lock(&mountpoints_mutex);
-	g_hash_table_insert(mountpoints,
-		string_ids ? (gpointer)g_strdup(file_source->id_str) : (gpointer)janus_uint64_dup(file_source->id),
-		file_source);
-	g_hash_table_remove(mountpoints_temp, string_ids ? (gpointer)file_source->id_str : (gpointer)&file_source->id);
-	janus_mutex_unlock(&mountpoints_mutex);
 	if(live) {
 		GError *error = NULL;
 		char tname[16];
@@ -8317,39 +8329,39 @@ static int janus_streaming_rtsp_parse_sdp(const char *buffer, const char *name, 
 	/* Parse the SDP now */
 	char pattern[256];
 	g_snprintf(pattern, sizeof(pattern), "m=%s", media);
-	char *m = strstr(buffer, pattern);
+	const char *m = strstr(buffer, pattern);
 	if(m == NULL) {
 		JANUS_LOG(LOG_VERB, "[%s] no media %s...\n", name, media);
 		return -1;
 	}
 	sscanf(m, "m=%*s %*d %*s %d", pt);
-	char *s = strstr(m, "a=control:");
+	const char *s = strstr(m, "a=control:");
 	if(s == NULL) {
 		JANUS_LOG(LOG_ERR, "[%s] no control for %s...\n", name, media);
 		return -1;
 	}
 	sscanf(s, "a=control:%2047s", control);
-	char *r = strstr(m, "a=rtpmap:");
+	const char *r = strstr(m, "a=rtpmap:");
 	if(r != NULL) {
 		if(sscanf(r, "a=rtpmap:%*d%*[ ]%2047[^\r\n]s", rtpmap) != 1) {
 			JANUS_LOG(LOG_ERR, "[%s] cannot parse %s rtpmap...\n", name, media);
 			return -1;
 		}
 	}
-	char *f = strstr(m, "a=fmtp:");
+	const char *f = strstr(m, "a=fmtp:");
 	if(f != NULL) {
 		if(sscanf(f, "a=fmtp:%*d%*[ ]%2047[^\r\n]s", fmtp) != 1) {
 			JANUS_LOG(LOG_ERR, "[%s] cannot parse %s fmtp...\n", name, media);
 			return -1;
 		}
-		char *start = strstr(f, "sprop-parameter-sets=");
+		char *start = (char *)strstr(f, "sprop-parameter-sets=");
 		if(sps != NULL && start != NULL) {
 			start += strlen("sprop-parameter-sets=");
-			char *end = strstr(start, ";");
+			char *end = (char *)strstr(start, ";");
 			if(end == NULL)
-				end = strstr(start, "\r");
+				end = (char *)strstr(start, "\r");
 			if(end == NULL)
-				end = strstr(start, "\n");
+				end = (char *)strstr(start, "\n");
 			if(end) {
 				char c = *end;
 				*end = '\0';
@@ -8361,17 +8373,17 @@ static int janus_streaming_rtsp_parse_sdp(const char *buffer, const char *name, 
 			}
 		}
 	}
-	char *c = strstr(m, "c=IN IP4");
+	char *c = (char *)strstr(m, "c=IN IP4");
 	if(c == NULL) {
 		/* No m-line c= attribute? try in the whole SDP */
-		c = strstr(buffer, "c=IN IP4");
+		c = (char *)strstr(buffer, "c=IN IP4");
 	}
 	char ip[256];
 	in_addr_t mcast = INADDR_ANY;
 	if(c != NULL) {
 		if(sscanf(c, "c=IN IP4 %255[^/]", ip) != 0) {
 			memcpy(host, ip, sizeof(ip));
-			c = strstr(host, "\r\n");
+			c = (char *)strstr(host, "\r\n");
 			if(c)
 				*c = '\0';
 			mcast = inet_addr(ip);
@@ -9323,12 +9335,6 @@ janus_streaming_mountpoint *janus_streaming_create_rtsp_source(
 		janus_refcount_decrease(&live_rtsp->ref);
 		return NULL;
 	}
-	janus_mutex_lock(&mountpoints_mutex);
-	g_hash_table_insert(mountpoints,
-		string_ids ? (gpointer)g_strdup(live_rtsp->id_str) : (gpointer)janus_uint64_dup(live_rtsp->id),
-		live_rtsp);
-	g_hash_table_remove(mountpoints_temp, string_ids ? (gpointer)live_rtsp->id_str : (gpointer)&live_rtsp->id);
-	janus_mutex_unlock(&mountpoints_mutex);
 	return live_rtsp;
 }
 #else
@@ -9495,8 +9501,10 @@ static void *janus_streaming_ondemand_thread(void *data) {
 		packet.ptype = packet.data->type;
 		packet.timestamp = ntohl(packet.data->timestamp);
 		packet.seq_number = ntohs(packet.data->seq_number);
-		/* Go! */
+		/* Go! Hold the mountpoint mutex, since hangup_media frees the session streams while holding it */
+		janus_mutex_lock_nodebug(&mountpoint->mutex);
 		janus_streaming_relay_rtp_packet(session, &packet);
+		janus_mutex_unlock_nodebug(&mountpoint->mutex);
 		/* Update header */
 		seq++;
 		header->seq_number = htons(seq);
@@ -10546,7 +10554,8 @@ static void janus_streaming_relay_rtp_packet(gpointer data, gpointer user_data) 
 						s->spatial_layer, s->target_spatial_layer);
 					/* We need to upscale: wait for a keyframe */
 					if(keyframe) {
-						int new_spatial_layer = s->target_spatial_layer;
+						/* The target may be higher than the layers we track */
+						int new_spatial_layer = s->target_spatial_layer > 2 ? 2 : s->target_spatial_layer;
 						while(new_spatial_layer > s->spatial_layer && new_spatial_layer > 0) {
 							if(now - s->last_spatial_layer[new_spatial_layer] >= 250000) {
 								/* We haven't received packets from this layer for a while, try a lower layer */

@@ -4096,9 +4096,9 @@ int janus_videoroom_init(janus_callbacks *callback, const char *config_path) {
 							videoroom->threads = g_list_append(videoroom->threads, helper);
 						}
 						if(error != NULL) {
-							/* Something went wrong, return an error */
+							/* Something went wrong, skip this room */
+							g_error_free(error);
 							janus_videoroom_room_destroy(videoroom);
-							janus_mutex_unlock(&rooms_mutex);
 							cl = cl->next;
 							continue;
 						}
@@ -4980,8 +4980,6 @@ static json_t *janus_videoroom_process_synchronous_request(janus_videoroom_sessi
 		}
 		videoroom->room_id = room_id;
 		videoroom->room_id_str = room_id_str ? g_strdup(room_id_str) : NULL;
-		if(room_id_allocated)
-			g_free(room_id_str);
 		char *description = NULL;
 		if(desc != NULL && strlen(json_string_value(desc)) > 0) {
 			description = g_strdup(json_string_value(desc));
@@ -5054,6 +5052,8 @@ static json_t *janus_videoroom_process_synchronous_request(janus_videoroom_sessi
 				/* Something went wrong, return an error */
 				janus_videoroom_room_destroy(videoroom);
 				janus_mutex_unlock(&rooms_mutex);
+				if(room_id_allocated)
+					g_free(room_id_str);
 				error_code = JANUS_VIDEOROOM_ERROR_UNKNOWN_ERROR;
 				g_snprintf(error_cause, 512, "Helper threads error");
 				goto prepare_response;
@@ -5351,15 +5351,17 @@ static json_t *janus_videoroom_process_synchronous_request(janus_videoroom_sessi
 		/* Send info back */
 		response = json_object();
 		json_object_set_new(response, "videoroom", json_string("created"));
-		json_object_set_new(response, "room", string_ids ? json_string(videoroom->room_id_str) : json_integer(videoroom->room_id));
+		json_object_set_new(response, "room", string_ids ? json_string(room_id_str) : json_integer(room_id));
 		json_object_set_new(response, "permanent", save ? json_true() : json_false());
 		/* Also notify event handlers */
 		if(notify_events && gateway->events_is_enabled()) {
 			json_t *info = json_object();
 			json_object_set_new(info, "event", json_string("created"));
-			json_object_set_new(info, "room", string_ids ? json_string(videoroom->room_id_str) : json_integer(videoroom->room_id));
+			json_object_set_new(info, "room", string_ids ? json_string(room_id_str) : json_integer(room_id));
 			gateway->notify_event(&janus_videoroom_plugin, session ? session->handle : NULL, info);
 		}
+		if(room_id_allocated)
+			g_free(room_id_str);
 		goto prepare_response;
 	} else if(!strcasecmp(request_text, "edit")) {
 		/* Edit the properties for an existing VideoRoom */
@@ -11211,8 +11213,12 @@ static void *janus_videoroom_handler(void *data) {
 					gateway->notify_event(&janus_videoroom_plugin, session->handle, info);
 				}
 			} else if(!strcasecmp(request_text, "unpublish")) {
-				/* This participant wants to unpublish */
-				if(!g_atomic_int_get(&participant->session->started)) {
+				/* This participant wants to unpublish: since a publisher counts as
+				 * such as soon as we answered (starting), and not only once the
+				 * PeerConnection is up (started), accept unpublish in both cases,
+				 * or a negotiation in progress would hold a publisher slot */
+				if(!g_atomic_int_get(&participant->session->starting) &&
+						!g_atomic_int_get(&participant->session->started)) {
 					janus_refcount_decrease(&participant->ref);
 					JANUS_LOG(LOG_ERR, "Can't unpublish, not published\n");
 					error_code = JANUS_VIDEOROOM_ERROR_NOT_PUBLISHED;
@@ -11685,6 +11691,7 @@ static void *janus_videoroom_handler(void *data) {
 								if((ps->type == JANUS_VIDEOROOM_MEDIA_AUDIO && ps->acodec == JANUS_AUDIOCODEC_NONE) ||
 										(ps->type == JANUS_VIDEOROOM_MEDIA_VIDEO && ps->vcodec == JANUS_VIDEOCODEC_NONE)) {
 									JANUS_LOG(LOG_WARN, "Skipping rejected publisher stream...\n");
+									temp = temp->next;
 									continue;
 								}
 								janus_videoroom_subscriber_stream *stream = janus_videoroom_subscriber_stream_add_or_replace(subscriber, ps, crossrefid);
@@ -12823,6 +12830,9 @@ static void *janus_videoroom_handler(void *data) {
 					janus_mutex_unlock(&videoroom->mutex);
 				}
 				if(videoroom->require_e2ee && !e2ee && !participant->e2ee) {
+					/* We won't publish after all: don't hold a publisher slot */
+					if(!sdp_update)
+						g_atomic_int_set(&participant->session->starting, 0);
 					janus_refcount_decrease(&videoroom->ref);
 					janus_refcount_decrease(&participant->ref);
 					JANUS_LOG(LOG_ERR, "Room requires end-to-end encrypted media\n");
@@ -12839,6 +12849,9 @@ static void *janus_videoroom_handler(void *data) {
 				char error_str[512];
 				janus_sdp *offer = janus_sdp_parse(msg_sdp, error_str, sizeof(error_str));
 				if(offer == NULL) {
+					/* We won't publish after all: don't hold a publisher slot */
+					if(!sdp_update)
+						g_atomic_int_set(&participant->session->starting, 0);
 					janus_refcount_decrease(&videoroom->ref);
 					janus_refcount_decrease(&participant->ref);
 					json_decref(event);
@@ -13797,7 +13810,8 @@ static int janus_videoroom_create_fd(int port, in_addr_t mcast, const janus_netw
 				} else if(iface->family == AF_INET6) {
 					if(ipv6_disabled) {
 						JANUS_LOG(LOG_ERR, "Can't bind remote publisher to IPv6 address, IPv6 is disabled\n");
-						close(fd);
+						if(fd != -1)
+							close(fd);
 						janus_mutex_unlock(&fd_mutex);
 						return -1;
 					}
